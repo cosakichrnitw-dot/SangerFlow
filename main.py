@@ -1,22 +1,13 @@
 import sys
 
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import QApplication
+
+from gui.main_window import MainWindow
 
 
-def main():
-    app = QApplication(sys.argv)
+app = QApplication(sys.argv)
 
-    window = QWidget()
-    window.setWindowTitle("SangerFlow")
-    window.resize(800, 600)
+window = MainWindow()
+window.show()
 
-    label = QLabel("Hello, SangerFlow!", parent=window)
-    label.move(300, 280)
-
-    window.show()
-
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
+sys.exit(app.exec())
