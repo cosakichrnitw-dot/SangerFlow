@@ -6,40 +6,47 @@ from core.merge import merge_sequences
 
 
 
-INPUT_DIR = Path("input")
 OUTPUT_DIR = Path("output")
 
-FASTA_DIR = OUTPUT_DIR / "fasta"
-
-REPORT_FILE = OUTPUT_DIR / "summary.xlsx"
-
-MERGED_FASTA = OUTPUT_DIR / "merged.fas"
 
 
+def run_analysis(input_folder):
+    """
+    Execute SangerFlow workflow.
 
-def main():
+    This function will be called from GUI.
+    """
 
-    print("====================")
-    print("      SangerFlow")
-    print("====================")
+
+    input_folder = Path(input_folder)
+
+
+    FASTA_DIR = OUTPUT_DIR / "fasta"
+
+    REPORT_FILE = OUTPUT_DIR / "summary.xlsx"
+
+    MERGED_FASTA = OUTPUT_DIR / "merged.fas"
+
 
 
     OUTPUT_DIR.mkdir(
         exist_ok=True
     )
 
+    FASTA_DIR.mkdir(
+        exist_ok=True
+    )
 
-    print("\nInput folder:")
-    print(INPUT_DIR)
 
 
     print("\nProcessing AB1 files...\n")
 
 
     results = process_folder(
-        INPUT_DIR,
+        input_folder,
         FASTA_DIR
     )
+
 
 
     print("\nGenerating Excel report...")
@@ -57,6 +64,7 @@ def main():
     )
 
 
+
     print("\nMerging FASTA...")
 
 
@@ -71,12 +79,41 @@ def main():
     )
 
 
+
+    return results
+
+
+
+
+def main():
+
+
+    print("====================")
+    print("      SangerFlow")
+    print("====================")
+
+
+    INPUT_DIR = Path("input")
+
+
+    print("\nInput folder:")
+    print(INPUT_DIR)
+
+
+
+    results = run_analysis(
+        INPUT_DIR
+    )
+
+
+
     print("\n====================")
     print("Finished")
     print("====================")
 
 
     print("\nSummary:")
+
 
 
     for r in results:
