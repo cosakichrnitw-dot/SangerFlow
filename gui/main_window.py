@@ -20,27 +20,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SangerFlow v0.3")
         self.resize(900, 600)
 
-        # Main widget
         widget = QWidget()
         self.setCentralWidget(widget)
 
         layout = QVBoxLayout()
         widget.setLayout(layout)
 
-        # Open button
         self.open_button = QPushButton("Open AB1")
         self.open_button.clicked.connect(self.open_file)
 
         layout.addWidget(self.open_button)
 
-        # Chromatogram plot
         self.plot = pg.PlotWidget()
         self.plot.setBackground("w")
         self.plot.showGrid(x=True, y=True)
 
         layout.addWidget(self.plot)
 
-        # Sequence display
         self.sequence_box = QTextEdit()
         self.sequence_box.setReadOnly(True)
 
@@ -78,6 +74,20 @@ class MainWindow(QMainWindow):
                     pen=colors[base],
                     name=base
                 )
+
+            sequence = result["sequence"]
+            positions = result["positions"]
+
+            for base, x in zip(sequence, positions):
+
+                text = pg.TextItem(
+                    base,
+                    color=colors.get(base, "black")
+                )
+
+                text.setPos(x, 1000)
+
+                self.plot.addItem(text)
 
 
             self.sequence_box.setText(

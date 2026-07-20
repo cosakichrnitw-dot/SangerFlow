@@ -1,35 +1,46 @@
 from Bio import SeqIO
 
+from core.models import SangerRead
+
 
 def read_ab1(filepath):
     """
-    Read Sanger sequencing AB1 file.
-
-    Returns
-    -------
-    dict
-        sequence, quality and chromatogram traces
+    Read ABI chromatogram file and return SangerRead object.
     """
 
     record = SeqIO.read(filepath, "abi")
+
+    abi = record.annotations["abif_raw"]
+
+    # Chromatogram trace data
+    traces = {
+        "G": abi["DATA9"],
+        "A": abi["DATA10"],
+        "T": abi["DATA11"],
+        "C": abi["DATA12"],
+    }
+
+    # Base peak positions
+    if "PLOC2" in abi:
+        positions = abi["PLOC2"]
+    else:
+        positions = abi["PLOC1"]
 
     sequence = str(record.seq)
 
     quality = record.letter_annotations["phred_quality"]
 
-    # ABI chromatogram data
-    abi_data = record.annotations["abif_raw"]
+    # Average quality
+    average_quality = sum(quality) / len(quality)
 
-    traces = {
-        "G": abi_data["DATA9"],
-        "A": abi_data["DATA10"],
-        "T": abi_data["DATA11"],
-        "C": abi_data["DATA12"],
-    }
 
-    return {
-        "sequence": sequence,
-        "quality": quality,
-        "length": len(sequence),
-        "traces": traces
-    }
+    sample = SangerRead(
+        filename=str(filepath).split("/")[-1],
+        sequence=sequence,
+        quality=quality,
+        traces=traces,
+        base_positions=positions,
+        average_quality=average_quality,
+    )
+
+    return sample
