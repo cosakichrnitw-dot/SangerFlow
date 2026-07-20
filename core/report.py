@@ -1,142 +1,129 @@
-import csv
 from openpyxl import Workbook
-import os
+from pathlib import Path
 
 
-def save_blast_results(
-        results,
-        filename="blast_results"
-):
-
+def create_summary_excel(results, filename):
     """
-    Save BLAST results as CSV and Excel.
-
-    Parameters
-    ----------
-    results : list
-        BLAST result dictionaries
-
-    filename : str
-        output filename without extension
+    Create Excel summary report.
     """
 
+    filename = Path(filename)
 
-    os.makedirs(
-        "output",
+    filename.parent.mkdir(
         exist_ok=True
     )
 
 
-    csv_path = (
-        f"output/{filename}.csv"
-    )
-
-    xlsx_path = (
-        f"output/{filename}.xlsx"
-    )
-
-
-    headers = [
-        "Species",
-        "Identity (%)",
-        "Coverage (%)",
-        "Alignment length",
-        "E-value",
-        "Title"
-    ]
-
-
-    # =====================
-    # CSV
-    # =====================
-
-    with open(
-        csv_path,
-        "w",
-        newline="",
-        encoding="utf-8"
-    ) as f:
-
-        writer = csv.writer(f)
-
-        writer.writerow(headers)
-
-
-        for r in results:
-
-            writer.writerow(
-                [
-                    r["species"],
-                    r["identity"],
-                    r["coverage"],
-                    r["alignment_length"],
-                    r["e_value"],
-                    r["title"]
-                ]
-            )
-
-
-    # =====================
-    # Excel
-    # =====================
-
     wb = Workbook()
 
-    ws = wb.active
 
-    ws.title = "BLAST Results"
+    # =========================
+    # BLAST Summary
+    # =========================
+
+    ws1 = wb.active
+    ws1.title = "BLAST Summary"
 
 
-    ws.append(headers)
+    ws1.append(
+        [
+            "Sample",
+            "Species",
+            "Identity (%)",
+            "Coverage (%)",
+            "Alignment length",
+            "E-value"
+        ]
+    )
 
 
     for r in results:
 
-        ws.append(
+        if r.get("species", ""):
+
+            ws1.append(
+                [
+                    r["sample"],
+                    r["species"],
+                    r["identity"],
+                    r["coverage"],
+                    r["alignment_length"],
+                    r["e_value"]
+                ]
+            )
+
+
+    # =========================
+    # QC Summary
+    # =========================
+
+    ws2 = wb.create_sheet(
+        "QC Summary"
+    )
+
+
+    ws2.append(
+        [
+            "Sample",
+            "QC Status",
+            "QC Problems",
+            "Raw length",
+            "Trim length",
+            "Average Quality",
+            "Q20 (%)",
+            "Q30 (%)",
+            "Longest Q30 block",
+            "5' Quality",
+            "3' Quality"
+        ]
+    )
+
+
+    for r in results:
+
+        ws2.append(
             [
-                r["species"],
-                r["identity"],
-                r["coverage"],
-                r["alignment_length"],
-                r["e_value"],
-                r["title"]
+                r["sample"],
+                r["qc_status"],
+                r["qc_problems"],
+                r["raw_length"],
+                r["trim_length"],
+                r["average_quality"],
+                r["q20_rate"],
+                r["q30_rate"],
+                r["longest_q30_block"],
+                r["five_prime_quality"],
+                r["three_prime_quality"]
             ]
         )
 
 
-    # Column width adjustment
+    # =========================
+    # Column width
+    # =========================
 
-    for column in ws.columns:
+    for ws in [ws1, ws2]:
 
-        max_length = 0
+        for column in ws.columns:
 
-        column_letter = column[0].column_letter
+            max_length = 0
 
+            letter = column[0].column_letter
 
-        for cell in column:
+            for cell in column:
 
-            if cell.value:
+                if cell.value:
 
-                max_length = max(
-                    max_length,
-                    len(str(cell.value))
-                )
-
-
-        ws.column_dimensions[
-            column_letter
-        ].width = min(
-            max_length + 3,
-            60
-        )
+                    max_length = max(
+                        max_length,
+                        len(str(cell.value))
+                    )
 
 
-    wb.save(
-        xlsx_path
-    )
+            ws.column_dimensions[letter].width = min(
+                max_length + 3,
+                40
+            )
 
 
-    return {
-        "csv": csv_path,
-        "xlsx": xlsx_path
-    }
+    wb.save(filename)

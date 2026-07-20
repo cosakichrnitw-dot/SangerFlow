@@ -1,0 +1,26 @@
+{
+    "average_quality": {
+        "warning": 30,
+        "fail": 20
+    },
+
+    "q20_rate": {
+        "warning": 70,
+        "fail": 30
+    },
+
+    "q30_rate": {
+        "warning": 70,
+        "fail": 30
+    },
+
+    "terminal_quality": {
+        "five_prime_min": 20,
+        "three_prime_min": 20,
+        "terminal_size": 50
+    },
+
+    "longest_q30_block": {
+        "minimum": 400
+    }
+}

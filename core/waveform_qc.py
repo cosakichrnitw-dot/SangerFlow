@@ -1,3 +1,6 @@
+from core.config import load_qc_config
+
+
 def longest_quality_block(quality, threshold=30):
     """
     Calculate longest consecutive region
@@ -19,7 +22,11 @@ def longest_quality_block(quality, threshold=30):
             current = 0
 
     return longest
+
+
 def waveform_qc(sample):
+
+    config = load_qc_config()
 
     quality = sample.quality
 
@@ -39,7 +46,7 @@ def waveform_qc(sample):
     longest_q30 = longest_quality_block(
     quality,
     threshold=30
-)
+    )
 
 
     q20_rate = (
@@ -58,7 +65,7 @@ def waveform_qc(sample):
 
     # terminal quality
 
-    terminal_size = 50
+    terminal_size = config["terminal_quality"]["terminal_size"]
 
 
     five_prime = quality[:terminal_size]
@@ -83,31 +90,36 @@ def waveform_qc(sample):
     problems = []
 
 
-    if average_q < 30:
+    if average_q < config["average_quality"]["warning"]:
         problems.append(
             "Low average quality"
         )
 
 
-    if q30_rate < 70:
+    if q30_rate < config["q30_rate"]["warning"]:
         problems.append(
             "Low Q30 rate"
         )
 
 
-    if five_prime_q < 20:
+    if five_prime_q < config["terminal_quality"]["five_prime_min"]:
         problems.append(
             "Poor 5' end"
         )
 
 
-    if three_prime_q < 20:
+    if three_prime_q < config["terminal_quality"]["three_prime_min"]:
         problems.append(
-            "Poor 3' end"
+        "Poor 3' end"
         )
+        
 
 
-    if average_q < 20 or q30_rate < 30:
+    if (
+    average_q < config["average_quality"]["fail"]
+    or
+    q30_rate < config["q30_rate"]["fail"]
+):
 
         status = "FAIL"
 
