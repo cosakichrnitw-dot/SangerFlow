@@ -1,28 +1,56 @@
-# Python virtual environment
-.venv/
-
-# Python cache
-__pycache__/
-*.pyc
-
-# macOS
-.DS_Store
-
-*.ab1
+# =========================
 # Python virtual environments
+# =========================
+
 .venv/
 .venv_broken/
+venv/
 
+
+# =========================
 # Python cache
+# =========================
+
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
+
+# =========================
 # macOS
+# =========================
+
 .DS_Store
 
-# Output files
+
+# =========================
+# Sequencing data
+# =========================
+
+*.ab1
+*.abi
+
+
+# =========================
+# Sequence outputs
+# =========================
+
+*.fas
+*.fasta
+*.aln
+
+
+# =========================
+# Analysis outputs
+# =========================
+
 output/
 
-# Sanger data
-input/*.ab1
 
+# =========================
+# Temporary files
+# =========================
+
+*.tmp
+*.log
