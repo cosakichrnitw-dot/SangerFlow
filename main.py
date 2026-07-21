@@ -5,28 +5,23 @@ from core.report import create_summary_excel
 from core.merge import merge_sequences
 
 
-
 OUTPUT_DIR = Path("output")
 
 
-
-def run_analysis(input_folder):
+def run_analysis(
+    input_folder,
+    callback=None
+):
     """
     Execute SangerFlow workflow.
-
-    This function will be called from GUI.
+    GUI calls this function.
     """
-
 
     input_folder = Path(input_folder)
 
-
     FASTA_DIR = OUTPUT_DIR / "fasta"
-
     REPORT_FILE = OUTPUT_DIR / "summary.xlsx"
-
     MERGED_FASTA = OUTPUT_DIR / "merged.fas"
-
 
 
     OUTPUT_DIR.mkdir(
@@ -38,18 +33,31 @@ def run_analysis(input_folder):
     )
 
 
+    # ---------------------
+    # AB1 processing
+    # ---------------------
 
-    print("\nProcessing AB1 files...\n")
+    if callback:
+        callback("Processing AB1 files...")
+    else:
+        print("\nProcessing AB1 files...\n")
 
 
     results = process_folder(
         input_folder,
-        FASTA_DIR
+        FASTA_DIR,
+        callback=callback
     )
 
 
+    # ---------------------
+    # Excel report
+    # ---------------------
 
-    print("\nGenerating Excel report...")
+    if callback:
+        callback("Generating Excel report...")
+    else:
+        print("\nGenerating Excel report...")
 
 
     create_summary_excel(
@@ -58,14 +66,23 @@ def run_analysis(input_folder):
     )
 
 
-    print(
-        "Saved:",
-        REPORT_FILE
-    )
+    message = f"Saved: {REPORT_FILE}"
+
+    if callback:
+        callback(message)
+    else:
+        print(message)
 
 
 
-    print("\nMerging FASTA...")
+    # ---------------------
+    # FASTA merge
+    # ---------------------
+
+    if callback:
+        callback("Merging FASTA...")
+    else:
+        print("\nMerging FASTA...")
 
 
     merge_result = merge_sequences(
@@ -74,19 +91,27 @@ def run_analysis(input_folder):
     )
 
 
-    print(
+    message = (
         f"Merged {merge_result['sequence_count']} sequences"
     )
 
+
+    if callback:
+        callback(message)
+    else:
+        print(message)
+
+
+
+    if callback:
+        callback("Analysis complete.")
 
 
     return results
 
 
 
-
 def main():
-
 
     print("====================")
     print("      SangerFlow")
@@ -96,15 +121,9 @@ def main():
     INPUT_DIR = Path("input")
 
 
-    print("\nInput folder:")
-    print(INPUT_DIR)
-
-
-
     results = run_analysis(
         INPUT_DIR
     )
-
 
 
     print("\n====================")
@@ -113,7 +132,6 @@ def main():
 
 
     print("\nSummary:")
-
 
 
     for r in results:
@@ -127,5 +145,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
