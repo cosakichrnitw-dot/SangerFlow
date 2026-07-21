@@ -1,5 +1,6 @@
 import tkinter as tk
-import numpy as np
+
+from gui.chromatogram_read import ChromatogramRead
 
 
 class ChromatogramCanvas(tk.Frame):
@@ -48,7 +49,17 @@ class ChromatogramCanvas(tk.Frame):
         self.scrollbar.config(
             command=self.canvas.xview
         )
+        
+        # =====================
+        # Zoom control
+        # =====================
 
+        self.zoom_factor = 1.2
+
+        self.canvas.bind(
+            "<MouseWheel>",
+            self.zoom
+        )
 
         # =====================
         # Reads
@@ -79,19 +90,18 @@ class ChromatogramCanvas(tk.Frame):
 
     def load_data(
         self,
-        result
-    ):
+        read
+        ):
 
         self.reads = [
-            result
-        ]
-
+            read
+            ]
 
         self.draw()
 
 
 
-        # ==================================================
+    # ==================================================
     # Main draw
     # ==================================================
 
@@ -106,374 +116,93 @@ class ChromatogramCanvas(tk.Frame):
             return
 
 
-        read = self.reads[0]
+        for i, read in enumerate(self.reads):
 
-
-        # Background layer
-        self.draw_quality_overlay(
-            read
-        )
-
-
-        # Trace layer
-        self.draw_traces(
-            read
-        )
-
-
-        # Text layer
-        self.draw_sequence(
-            read
-        )
-
-
-        # Ruler layer
-        self.draw_ruler(
-            read
-        )
-
-
-
-    # ==================================================
-    # Quality Track
-    # ==================================================
-
+            self.draw_single_read(
+                read,
+                i
+            )
     
+    # ==================================================
+    # Single read renderer
+    # ==================================================
 
-    def draw_quality_overlay(
+    def draw_single_read(
         self,
-        read
+        read,
+        index
     ):
 
-        quality = read.quality
-        positions = read.base_positions
+        viewer = ChromatogramRead(
 
+            canvas=self.canvas,
 
-        if len(quality) == 0:
-            return
+            read=read,
 
+            scale_x=self.scale_x,
 
-        base_y = self.trace_top + self.trace_height / 2
+            trace_top=self.trace_top,
 
+            trace_height=self.trace_height,
 
-        max_height = self.trace_height
+            sequence_y=self.sequence_y,
 
-        max_q = 40
+            ruler_y=self.ruler_y,
 
-
-        points = []
-
-
-        for i, q in enumerate(quality):
-
-            if i >= len(positions):
-                break
-
-
-            x = (
-                positions[i]
-                *
-                self.scale_x
-            )
-
-
-            height = (
-                min(q, max_q)
-                /
-                max_q
-                *
-                max_height
-            )
-
-
-            points.append(
-                x
-            )
-
-            points.append(
-                base_y - height
-            )
-
-
-        if len(points) < 4:
-            return
-
-
-        # close polygon
-
-        first_x = points[0]
-
-        last_x = points[-2]
-
-
-        polygon = points + [
-
-            last_x,
-            base_y,
-
-            first_x,
-            base_y
-
-        ]
-
-
-        self.canvas.create_polygon(
-
-            polygon,
-
-            fill="#EEF9FF",
-
-            outline=""
+            y_offset=index * 300
 
         )
 
 
-
-    # ==================================================
-    # Ruler
-    # ==================================================
-
-    def draw_ruler(
-        self,
-        read
-    ):
-
-
-        for i,pos in enumerate(
-            read.base_positions
-        ):
-
-
-            if i % 10 != 0:
-                continue
-
-
-            x = (
-                pos *
-                self.scale_x
-            )
-
-
-            self.canvas.create_text(
-
-                x,
-
-                self.ruler_y,
-
-                text=str(i),
-
-                font=(
-                    "Courier",
-                    10
-                )
-            )
-
-
-            self.canvas.create_line(
-
-                x,
-
-                self.ruler_y+10,
-
-                x,
-
-                self.ruler_y+20
-
-            )
-
-
-
-    # ==================================================
-    # Sequence
-    # ==================================================
-
-    def draw_sequence(
-        self,
-        read
-    ):
-
-
-        colors = {
-
-            "A":"green",
-
-            "C":"blue",
-
-            "G":"black",
-
-            "T":"red"
-
-        }
-
-
-        for base,pos in zip(
-
-            read.sequence,
-
-            read.base_positions
-
-        ):
-
-
-            x = (
-                pos *
-                self.scale_x
-            )
-
-
-            self.canvas.create_text(
-
-                x,
-
-                self.sequence_y,
-
-                text=base,
-
-                fill=colors.get(
-                    base,
-                    "black"
-                ),
-
-                font=(
-                    "Courier",
-                    12,
-                    "bold"
-                )
-            )
-
-
-
-    # ==================================================
-    # Trace
-    # ==================================================
-
-    def draw_traces(
-        self,
-        read
-    ):
-
-
-        colors = {
-
-            "A":"green",
-
-            "C":"blue",
-
-            "G":"black",
-
-            "T":"red"
-
-        }
-
-
-
-        max_length = len(
-            read.traces["A"]
-        )
+        viewer.draw()
 
 
         self.canvas.config(
+            scrollregion=self.canvas.bbox("all")
+        )
 
-            scrollregion=(
+      
 
-                0,
+    # ==================================================
+    # Zoom
+    # ==================================================
 
-                0,
+    def zoom(
+        self,
+        event
+    ):
 
-                max_length*self.scale_x,
+        if event.delta > 0:
 
-                600
+            scale = self.zoom_factor
 
-            )
+        else:
 
+            scale = 1 / self.zoom_factor
+
+
+
+        # mouse position in canvas coordinates
+
+        x = self.canvas.canvasx(
+            event.x
+        )
+
+        y = self.canvas.canvasy(
+            event.y
         )
 
 
-
-        for base in [
-
-            "A",
-
-            "C",
-
-            "G",
-
-            "T"
-
-        ]:
+        self.canvas.scale(
+            "all",
+            x,
+            y,
+            scale,
+            scale
+        )
 
 
-            signal = np.array(
-
-                read.traces[base]
-
-            )
-
-
-            if signal.max()==0:
-                continue
-
-
-
-            signal = (
-
-                signal /
-
-                signal.max()
-
-                *
-
-                self.trace_height/2
-
-            )
-
-
-
-            points=[]
-
-
-
-            for i,value in enumerate(signal):
-
-
-                x = (
-
-                    i *
-
-                    self.scale_x
-
-                )
-
-
-                y = (
-
-                    self.trace_top
-
-                    +
-
-                    self.trace_height/2
-
-                    -
-
-                    value
-
-                )
-
-
-                points.extend(
-                    [
-                        x,
-                        y
-                    ]
-                )
-
-
-            self.canvas.create_line(
-
-                points,
-
-                fill=colors[base],
-
-                width=1
-
-            )
+        self.canvas.configure(
+            scrollregion=
+            self.canvas.bbox("all")
+        )
