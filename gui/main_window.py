@@ -31,16 +31,36 @@ class MainWindow:
         # =====================
 
 
+        # =====================
+        # Button frame
+        # =====================
+        self.button_frame = tk.Frame(root)
+        self.button_frame.pack(pady=5)
+        
         self.open_button = tk.Button(
-            root,
-            text="Open AB1",
-            command=self.open_file
-        )
-
-
+              self.button_frame,
+              text="Open AB1",
+              command=self.open_file,
+              width=15
+              )
+        
         self.open_button.pack(
-            pady=5
-        )
+              side="left",
+              padx=5
+              )
+
+
+        self.folder_button = tk.Button(
+              self.button_frame,
+              text="Open Folder",
+              command=self.open_folder,
+              width=15
+              )
+
+        self.folder_button.pack(
+              side="left",
+              padx=5
+              )
 
 
 
@@ -130,4 +150,57 @@ class MainWindow:
         self.sequence_box.insert(
             tk.END,
             result.sequence
+        )
+
+    # ==================================================
+    # Open Folder
+    # ==================================================
+
+    def open_folder(self):
+
+        folder = filedialog.askdirectory()
+
+        if not folder:
+            return
+
+        from pathlib import Path
+
+        reads = []
+
+        for filepath in sorted(
+            Path(folder).glob("*.ab1")
+        ):
+
+            try:
+
+                read = read_ab1(filepath)
+
+                reads.append(read)
+
+            except Exception as e:
+
+                print(
+                    f"Failed: {filepath.name}"
+                )
+
+                print(e)
+
+        if len(reads) == 0:
+
+            print("No AB1 files found.")
+
+            return
+
+        self.chrom_viewer.load_reads(
+            reads
+        )
+
+        self.sequence_box.delete(
+            "1.0",
+            tk.END
+        )
+
+        self.sequence_box.insert(
+            tk.END,
+            f"{len(reads)} AB1 files loaded."
         )

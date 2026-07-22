@@ -85,17 +85,15 @@ class ChromatogramCanvas(tk.Frame):
 
 
     # ==================================================
-    # Load single read
+    # Load multiple reads
     # ==================================================
 
-    def load_data(
+    def load_reads(
         self,
-        read
-        ):
+        reads
+    ):
 
-        self.reads = [
-            read
-            ]
+        self.reads = reads
 
         self.draw()
 
