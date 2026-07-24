@@ -2,13 +2,6 @@ import numpy as np
 
 
 class ChromatogramRead:
-    """
-    Renderer for a single Sanger sequencing read.
-
-    This class draws one chromatogram.
-    Canvas management, scrolling and zooming
-    are handled by ChromatogramCanvas.
-    """
 
 
     def __init__(
@@ -24,40 +17,63 @@ class ChromatogramRead:
     ):
 
         self.canvas = canvas
-
         self.read = read
-
 
         self.scale_x = scale_x
 
-
         self.trace_top = trace_top
-
         self.trace_height = trace_height
 
-
         self.sequence_y = sequence_y
-
         self.ruler_y = ruler_y
-
 
         self.y_offset = y_offset
 
+        self.show_trim_region = False
+
+        # =====================
+        # Shared trace coordinate
+        # =====================
+
+        self.trace_area_top = (
+            self.trace_top
+            +
+            self.y_offset
+        )
 
 
-    # ==================================================
-    # Draw all layers
+        self.trace_area_bottom = (
+            self.trace_top
+            +
+            self.y_offset
+            +
+            self.trace_height
+        )
+
+
+     # ==================================================
+    # Draw
     # ==================================================
 
     def draw(self):
 
+        # Trim display
+        if self.show_trim_region:
+            self.draw_trim_region()
+
+
+        # Quality background
         self.draw_quality_overlay()
 
+
+        # Chromatogram
         self.draw_traces()
 
+
+        # Bases
         self.draw_sequence()
 
-        self.draw_ruler()
+
 
     # ==================================================
     # Quality background
@@ -74,7 +90,17 @@ class ChromatogramRead:
             return
 
 
-        base_y = (
+        if len(positions) == 0:
+            return
+
+
+
+        points = []
+
+
+        # 波形中心
+
+        center_y = (
             self.trace_top
             +
             self.y_offset
@@ -83,12 +109,13 @@ class ChromatogramRead:
         )
 
 
-        max_height = self.trace_height
+        max_height = (
+            self.trace_height / 2
+        )
+
 
         max_q = 40
 
-
-        points = []
 
 
         for i, q in enumerate(quality):
@@ -105,40 +132,45 @@ class ChromatogramRead:
 
 
             height = (
+
                 min(q, max_q)
                 /
                 max_q
                 *
                 max_height
+
             )
 
 
             points.extend(
                 [
                     x,
-                    base_y - height
+                    center_y - height
                 ]
             )
+
 
 
         if len(points) < 4:
             return
 
 
-        first_x = points[0]
 
-        last_x = points[-2]
+        # 下側を波形中心で閉じる
+
+        polygon = points.copy()
 
 
-        polygon = points + [
+        polygon.extend(
+            [
+                points[-2],
+                center_y,
 
-            last_x,
-            base_y,
+                points[0],
+                center_y
+            ]
+        )
 
-            first_x,
-            base_y
-
-        ]
 
 
         self.canvas.create_polygon(
@@ -151,81 +183,156 @@ class ChromatogramRead:
 
         )
 
-    # ==================================================
-    # Ruler
-    # ==================================================
-
-    def draw_ruler(self):
-
-        for i, pos in enumerate(
-            self.read.base_positions
-        ):
-
-            if i % 10 != 0:
-                continue
 
 
-            x = (
-                pos
+    def draw_trim_region(self):
+
+        start = getattr(
+            self.read,
+            "trim_start",
+            None
+        )
+
+        end = getattr(
+            self.read,
+            "trim_end",
+            None
+        )
+
+
+        if start is None or end is None:
+            return
+
+
+        positions = self.read.base_positions
+
+
+        if len(positions) == 0:
+            return
+
+
+
+        # =====================
+        # Match quality background height
+        # =====================
+
+        center_y = (
+            self.trace_top
+            +
+            self.y_offset
+            +
+            self.trace_height / 2
+        )
+
+
+        trim_height = (
+            self.trace_height / 2
+        )
+
+
+        y1 = (
+            center_y
+            -
+            trim_height
+        )
+
+
+        y2 = center_y
+
+
+
+        # =====================
+        # Width
+        # =====================
+
+        total_width = (
+            positions[-1]
+            *
+            self.scale_x
+        )
+
+
+
+        # =====================
+        # Left low quality
+        # =====================
+
+        if start > 0:
+
+            x2 = (
+                positions[start]
                 *
                 self.scale_x
             )
 
 
-            y = (
-                self.ruler_y
-                +
-                self.y_offset
-            )
+            self.canvas.create_rectangle(
 
+                0,
 
-            self.canvas.create_text(
+                y1,
 
-                x,
+                x2,
 
-                y,
+                y2,
 
-                text=str(i),
+                fill="#FF9999",
 
-                font=(
-                    "Courier",
-                    10
-                )
+                outline=""
 
             )
 
 
-            self.canvas.create_line(
 
-                x,
+        # =====================
+        # Right low quality
+        # =====================
 
-                y + 10,
+        if end < len(positions):
 
-                x,
+            x1 = (
+                positions[end]
+                *
+                self.scale_x
+            )
 
-                y + 20
 
+            self.canvas.create_rectangle(
+
+                x1,
+
+                y1,
+
+                total_width,
+
+                y2,
+
+                fill="#FF9999",
+
+                outline=""
             )
 
 
 
     # ==================================================
-    # Sequence bases
+    # Sequence
     # ==================================================
 
     def draw_sequence(self):
 
+
         colors = {
 
-            "A": "green",
+            "A":"green",
 
-            "C": "blue",
+            "C":"blue",
 
-            "G": "black",
+            "G":"black",
 
-            "T": "red"
+            "T":"red"
 
         }
+
 
 
         for base, pos in zip(
@@ -240,12 +347,11 @@ class ChromatogramRead:
             x = (
 
                 pos
-
                 *
-
                 self.scale_x
 
             )
+
 
 
             self.canvas.create_text(
@@ -257,18 +363,15 @@ class ChromatogramRead:
                 text=base,
 
                 fill=colors.get(
-
                     base,
-
                     "black"
-
                 ),
 
                 font=(
 
                     "Courier",
 
-                    12,
+                    10,
 
                     "bold"
 
@@ -276,36 +379,38 @@ class ChromatogramRead:
 
             )
 
+
+
     # ==================================================
-    # Chromatogram trace
+    # Trace
     # ==================================================
 
     def draw_traces(self):
 
+
         colors = {
 
-            "A": "green",
+            "A":"green",
 
-            "C": "blue",
+            "C":"blue",
 
-            "G": "black",
+            "G":"black",
 
-            "T": "red"
+            "T":"red"
 
         }
+
 
 
         for base in [
 
             "A",
-
             "C",
-
             "G",
-
             "T"
 
         ]:
+
 
 
             signal = np.array(
@@ -313,6 +418,7 @@ class ChromatogramRead:
                 self.read.traces[base]
 
             )
+
 
 
             if signal.max() == 0:
@@ -324,16 +430,15 @@ class ChromatogramRead:
             signal = (
 
                 signal
-
                 /
-
                 signal.max()
-
                 *
-
-                self.trace_height / 2
+                self.trace_height
+                /
+                2
 
             )
+
 
 
             points = []
@@ -346,9 +451,7 @@ class ChromatogramRead:
                 x = (
 
                     i
-
                     *
-
                     self.scale_x
 
                 )
@@ -357,20 +460,15 @@ class ChromatogramRead:
                 y = (
 
                     self.trace_top
-
                     +
-
                     self.y_offset
-
                     +
-
                     self.trace_height / 2
-
                     -
-
                     value
 
                 )
+
 
 
                 points.extend(
@@ -378,7 +476,6 @@ class ChromatogramRead:
                     [
 
                         x,
-
                         y
 
                     ]

@@ -3,26 +3,52 @@ from dataclasses import dataclass, field
 
 @dataclass
 class SangerRead:
-    """Container for a single Sanger sequencing read."""
+    """
+    Data container for a Sanger sequencing read.
+    """
+
+    # =====================
+    # Basic information
+    # =====================
 
     filename: str
 
     sequence: str
 
-    quality: list[int]
+    quality: list
 
-    traces: dict[str, list[int]]
+    traces: dict
 
-    base_positions: list[int]
+    base_positions: list
 
-    trimmed_sequence: str = ""
+
+    # =====================
+    # Quality statistics
+    # =====================
+
+    average_quality: float = 0.0
+
+    q20_rate: float = 0.0
+
+    q30_rate: float = 0.0
+
+    hq_percent: float = 0.0
+
+    selected: bool = True
+
+
+    # =====================
+    # Trimming information
+    # =====================
 
     trim_start: int = 0
 
     trim_end: int = 0
 
-    average_quality: float = 0.0
+    trimmed_sequence: str = ""
 
-    blast_result: dict = field(default_factory=dict)
+    # =====================
+    # Optional flags
+    # =====================
 
-    notes: str = ""
+    selected: bool = True

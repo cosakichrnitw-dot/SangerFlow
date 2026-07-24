@@ -1,87 +1,147 @@
+import math
+
+
+
 def find_trim_region(
     quality,
-    threshold=20,
-    window=10
+    error_limit=0.05
 ):
     """
-    Find high-quality region using sliding window.
+    Modified Mott trimming algorithm.
+
+    Based on the method used by
+    Phred / Geneious-style trimming.
 
     Parameters
     ----------
     quality : list
         Phred quality scores
 
-    threshold : int
-        Minimum average quality
+    error_limit : float
+        Maximum allowed error probability
 
-    window : int
-        Window size
 
     Returns
     -------
-    start, end
+    start : int
+        Trim start position
+
+    end : int
+        Trim end position
     """
 
-    length = len(quality)
 
 
-    # Find start position
-    start = 0
-
-    for i in range(length - window):
-
-        window_quality = quality[i:i+window]
-
-        average = sum(window_quality) / window
-
-        if average >= threshold:
-            start = i
-            break
+    if len(quality) == 0:
+        return 0, 0
 
 
-    # Find end position
 
-    end = length
+    # ==================================
+    # Convert Q score to trimming score
+    # ==================================
 
-    for i in range(length-window, 0, -1):
-
-        window_quality = quality[i:i+window]
-
-        average = sum(window_quality) / window
-
-        if average >= threshold:
-            end = i + window
-            break
+    scores = []
 
 
-    return start, end
+    for q in quality:
+
+
+        error_probability = (
+            10 ** (-q / 10)
+        )
+
+
+        score = (
+            error_limit
+            -
+            error_probability
+        )
+
+
+        scores.append(score)
+
+
+
+    # ==================================
+    # Find maximum scoring segment
+    # ==================================
+
+    best_score = 0
+
+    current_score = 0
+
+
+    best_start = 0
+
+    best_end = len(scores)
+
+
+    current_start = 0
+
+
+
+    for i, score in enumerate(scores):
+
+
+        current_score += score
+
+
+
+        if current_score > best_score:
+
+            best_score = current_score
+
+            best_start = current_start
+
+            best_end = i + 1
+
+
+
+        if current_score < 0:
+
+            current_score = 0
+
+            current_start = i + 1
+
+
+
+    return (
+        best_start,
+        best_end
+    )
+
 
 
 
 def trim_sequence(
     sample,
-    threshold=20,
-    window=10
+    error_limit=0.05
 ):
     """
-    Trim low quality ends from Sanger read.
+    Apply Modified Mott trimming
+    to SangerRead object.
     """
+
 
 
     start, end = find_trim_region(
         sample.quality,
-        threshold,
-        window
+        error_limit
     )
 
 
+
     sample.trim_start = start
+
     sample.trim_end = end
+
 
 
     sample.trimmed_sequence = (
         sample.sequence[start:end]
     )
+
 
 
     return sample
