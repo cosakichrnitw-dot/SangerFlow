@@ -55,3 +55,43 @@ def save_fasta(
             f.write(
                 sequence[i:i+60] + "\n"
             )
+
+def export_consensus_fasta(
+    consensus,
+    filepath,
+    name="Consensus"
+):
+    """
+    Export consensus sequence as FASTA.
+    """
+
+
+    with open(
+        filepath,
+        "w"
+    ) as f:
+
+
+        f.write(
+            f">{name}\n"
+        )
+
+
+        # FASTA standard:
+        # 60 bp lines
+
+        for i in range(
+            0,
+            len(consensus),
+            60
+        ):
+
+            f.write(
+
+                consensus[i:i+60]
+
+                +
+
+                "\n"
+
+            )

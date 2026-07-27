@@ -1,27 +1,29 @@
 from Bio.Blast import NCBIWWW
 from Bio.Blast import NCBIXML
 from Bio import Entrez
+from Bio import SeqIO
 
 import re
 import ssl
 import certifi
 
+DEFAULT_HITS = 3
 
+# ==================================================
 # Fix SSL certificate issue on macOS
+# ==================================================
+
 ssl._create_default_https_context = (
     lambda: ssl.create_default_context(
         cafile=certifi.where()
     )
 )
 
+# ==================================================
+# Extract species name
+# ==================================================
 
 def extract_species(title):
-    """
-    Extract species name from BLAST title.
-    """
-
-    # Example:
-    # gi|xxx|gb|xxx Rhynchobatus springeri voucher...
 
     match = re.search(
         r"\|\s*([A-Z][a-z]+ [a-z]+)",
@@ -31,8 +33,6 @@ def extract_species(title):
     if match:
         return match.group(1)
 
-
-    # fallback
     words = title.split()
 
     for i in range(len(words)-1):
@@ -41,36 +41,43 @@ def extract_species(title):
             words[i][0].isupper()
             and words[i+1][0].islower()
         ):
-            return (
-                words[i]
-                + " "
-                + words[i+1]
-            )
+
+            return words[i] + " " + words[i+1]
 
     return "Unknown"
 
 
+# ==================================================
+# Extract accession
+# ==================================================
+
+def extract_accession(title):
+
+    m = re.search(
+        r"\|([A-Z]{1,3}_?[A-Z0-9]+\.[0-9]+)\|",
+        title
+    )
+
+    if m:
+        return m.group(1)
+
+    return ""
+
+
+# ==================================================
+# Single BLAST
+# ==================================================
 
 def blast_sequence(
     sequence,
     database="nt",
     program="blastn",
-    email=None
+    email=None,
+    max_hits=DEFAULT_HITS
 ):
-
-    """
-    Run NCBI BLAST.
-
-    Returns
-    -------
-    list
-        formatted BLAST results
-    """
-
 
     if email:
         Entrez.email = email
-
 
     result_handle = NCBIWWW.qblast(
         program,
@@ -78,49 +85,184 @@ def blast_sequence(
         sequence
     )
 
-
     blast_record = NCBIXML.read(
         result_handle
     )
 
-
     results = []
 
-
-    for alignment in blast_record.alignments[:10]:
+    for alignment in blast_record.alignments[:max_hits]:
 
         hsp = alignment.hsps[0]
 
-
         identity = (
             hsp.identities /
-            hsp.align_length
-            * 100
+            hsp.align_length *
+            100
         )
-
 
         coverage = (
             hsp.align_length /
-            len(sequence)
-            * 100
+            len(sequence) *
+            100
         )
 
+        results.append({
 
-        species = extract_species(
-            alignment.title
-        )
+            "species":
+                extract_species(
+                    alignment.title
+                ),
 
+            "identity":
+                round(identity,3),
 
-        results.append(
-            {
-                "species": species,
-                "identity": round(identity, 3),
-                "coverage": round(coverage, 3),
-                "alignment_length": hsp.align_length,
-                "e_value": hsp.expect,
-                "title": alignment.title
-            }
-        )
+            "coverage":
+                round(coverage,3),
 
+            "alignment_length":
+                hsp.align_length,
+
+            "e_value":
+                hsp.expect,
+
+            "accession":
+                extract_accession(
+                    alignment.title
+                ),
+
+            "title":
+                alignment.title
+
+        })
 
     return results
+
+
+# ==================================================
+# Folder BLAST
+# ==================================================
+
+def blast_folder(
+    reads,
+    database="nt",
+    program="blastn",
+    email=None,
+    max_hits=DEFAULT_HITS
+):
+
+    all_results = []
+
+    for read in reads:
+
+        print(
+            f"Running BLAST: {read.filename}"
+        )
+
+        try:
+
+            results = blast_sequence(
+
+                read.sequence,
+
+                database=database,
+
+                program=program,
+
+                email=email,
+
+                max_hits=max_hits
+
+            )
+
+            for result in results:
+
+                result["sample"] = read.filename
+
+                all_results.append(
+                    result
+                )
+
+        except Exception as e:
+
+            print(
+                f"BLAST failed: {read.filename}"
+            )
+
+            all_results.append({
+
+                "sample":
+                    read.filename,
+
+                "species":
+                    "ERROR",
+
+                "identity":
+                    0,
+
+                "coverage":
+                    0,
+
+                "alignment_length":
+                    0,
+
+                "e_value":
+                    None,
+
+                "accession":
+                    "",
+
+                "title":
+                    str(e)
+
+            })
+
+    return all_results
+
+
+# ==================================================
+# FASTA BLAST
+# ==================================================
+
+def blast_fasta(
+    fasta_file,
+    database="nt",
+    program="blastn",
+    email=None,
+    max_hits=DEFAULT_HITS
+):
+
+    all_results = []
+
+    for record in SeqIO.parse(
+        fasta_file,
+        "fasta"
+    ):
+
+        print(
+            f"Running BLAST: {record.id}"
+        )
+
+        results = blast_sequence(
+
+            str(record.seq),
+
+            database=database,
+
+            program=program,
+
+            email=email,
+
+            max_hits=max_hits
+
+        )
+
+        for result in results:
+
+            result["sample"] = record.id
+
+            all_results.append(
+                result
+            )
+
+    return all_results

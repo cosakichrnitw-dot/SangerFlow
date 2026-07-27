@@ -160,7 +160,11 @@ class ChromatogramCanvas(tk.Frame):
 
         self.ruler_y = 5
 
+        # =====================
+        # Current position marker
+        # =====================
 
+        self.current_position = None
 
 
     # ==================================================
@@ -323,3 +327,87 @@ class ChromatogramCanvas(tk.Frame):
         )
 
         viewer.draw()
+
+    # ==================================================
+    # Jump to alignment position
+    # ==================================================
+
+    def goto_position(
+        self,
+        position
+    ):
+
+
+        if position is None:
+
+            return
+
+
+
+        self.current_position = position
+
+
+
+        # Alignment position
+        x = (
+
+            position
+
+            *
+
+            self.scale_x
+
+        )
+
+
+
+        bbox = self.canvas.bbox(
+            "all"
+        )
+
+
+        if not bbox:
+
+            return
+
+
+
+        canvas_width = self.canvas.winfo_width()
+
+
+
+        total_width = bbox[2]
+
+
+
+        if total_width <= canvas_width:
+
+            return
+
+
+
+        fraction = (
+
+            x - canvas_width / 2
+
+        ) / total_width
+
+
+
+        if fraction < 0:
+
+            fraction = 0
+
+
+
+        if fraction > 1:
+
+            fraction = 1
+
+
+
+        self.canvas.xview_moveto(
+
+            fraction
+
+        )

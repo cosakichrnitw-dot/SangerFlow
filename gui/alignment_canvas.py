@@ -1,15 +1,21 @@
 import tkinter as tk
 
+from core.consensus import build_consensus
+from core.alignment_stats import alignment_summary
+
+
 
 class AlignmentCanvas(tk.Frame):
 
 
     def __init__(
         self,
-        parent
+        parent,
+        click_callback=None
     ):
 
         super().__init__(parent)
+        self.click_callback = click_callback
 
 
 
@@ -25,6 +31,29 @@ class AlignmentCanvas(tk.Frame):
 
 
         self.alignment = {}
+        self.consensus = ""
+
+
+
+        # =====================
+        # Base colors
+        # =====================
+
+        self.base_colors = {
+
+            "A": "green",
+
+            "C": "blue",
+
+            "G": "black",
+
+            "T": "red",
+
+            "-": "gray",
+
+            "N": "purple"
+
+        }
 
 
 
@@ -39,6 +68,7 @@ class AlignmentCanvas(tk.Frame):
             orient="horizontal"
 
         )
+
 
         self.h_scrollbar.pack(
 
@@ -57,6 +87,7 @@ class AlignmentCanvas(tk.Frame):
             orient="vertical"
 
         )
+
 
         self.v_scrollbar.pack(
 
@@ -108,23 +139,14 @@ class AlignmentCanvas(tk.Frame):
 
         )
 
+        # =====================
+        # Mouse click event
+        # =====================
 
-
-        # Base colors
-
-        self.base_colors = {
-
-            "A": "green",
-
-            "C": "blue",
-
-            "G": "black",
-
-            "T": "red",
-
-            "-": "gray"
-
-        }
+        self.canvas.bind(
+            "<Button-1>",
+            self.on_click
+        )
 
 
 
@@ -133,28 +155,36 @@ class AlignmentCanvas(tk.Frame):
     # ==================================================
 
     def load_alignment(
+
         self,
+
         filepath
+
     ):
 
 
         self.alignment = {}
 
 
-        name = None
 
+        name = None
 
         sequence = []
 
 
 
         with open(
+
             filepath,
+
             "r"
+
         ) as f:
 
 
+
             for line in f:
+
 
 
                 line = line.strip()
@@ -168,6 +198,7 @@ class AlignmentCanvas(tk.Frame):
 
 
                 if line.startswith(">"):
+
 
 
                     if name is not None:
@@ -184,9 +215,12 @@ class AlignmentCanvas(tk.Frame):
 
                 else:
 
+
                     sequence.append(
+
                         line.upper()
-                        )
+
+                    )
 
 
 
@@ -198,8 +232,6 @@ class AlignmentCanvas(tk.Frame):
 
         self.draw()
 
-
-
     # ==================================================
     # Draw alignment
     # ==================================================
@@ -208,8 +240,11 @@ class AlignmentCanvas(tk.Frame):
 
 
         self.canvas.delete(
+
             "all"
+
         )
+
 
 
         if len(self.alignment) == 0:
@@ -219,7 +254,31 @@ class AlignmentCanvas(tk.Frame):
 
 
         names = list(
+
             self.alignment.keys()
+
+        )
+
+
+        sequences = list(
+
+            self.alignment.values()
+
+        )
+
+
+        consensus = build_consensus(
+
+            sequences
+
+        )
+
+        self.consensus = consensus
+
+        stats = alignment_summary(
+
+            self.alignment,
+
         )
 
 
@@ -227,11 +286,46 @@ class AlignmentCanvas(tk.Frame):
 
             len(seq)
 
-            for seq in self.alignment.values()
+            for seq in sequences
+
+        )
+
+        # =====================
+        # Alignment information
+        # =====================
+
+        info_text = (
+
+            f"Sequences: {stats['sequence_count']}    "
+
+            f"Length: {stats['alignment_length']} bp    "
+
+            f"Variable sites: {stats['variable_sites']}"
 
         )
 
 
+        self.canvas.create_text(
+
+            10,
+
+            5,
+
+            text=info_text,
+
+            anchor="w",
+
+            font=(
+
+                "Courier",
+
+                10,
+
+                "bold"
+
+            )
+
+        )
 
         # =====================
         # Position ruler
@@ -242,7 +336,9 @@ class AlignmentCanvas(tk.Frame):
 
 
         for i in range(
+
             max_length
+
         ):
 
 
@@ -267,7 +363,7 @@ class AlignmentCanvas(tk.Frame):
 
                     ruler_y,
 
-                    text=str(i+1),
+                    text=str(i + 1),
 
                     font=(
 
@@ -280,7 +376,6 @@ class AlignmentCanvas(tk.Frame):
                 )
 
 
-
                 self.canvas.create_line(
 
                     x,
@@ -289,22 +384,107 @@ class AlignmentCanvas(tk.Frame):
 
                     x,
 
-                    ruler_y + 10
+                    ruler_y + 12
 
                 )
 
 
 
         # =====================
-        # Alignment
+        # Consensus row
+        # =====================
+
+        consensus_y = 55
+
+
+
+        self.canvas.create_text(
+
+            5,
+
+            consensus_y,
+
+            text="Consensus",
+
+            anchor="w",
+
+            font=(
+
+                "Courier",
+
+                10,
+
+                "bold"
+
+            )
+
+        )
+
+
+
+        for i, base in enumerate(
+
+            consensus
+
+        ):
+
+
+            x = (
+
+                self.name_width
+
+                +
+
+                i * self.base_width
+
+            )
+
+
+
+            self.canvas.create_text(
+
+                x,
+
+                consensus_y,
+
+                text=base,
+
+                fill=self.base_colors.get(
+
+                    base,
+
+                    "black"
+
+                ),
+
+                font=(
+
+                    "Courier",
+
+                    10,
+
+                    "bold"
+
+                )
+
+            )
+
+
+
+        # =====================
+        # Alignment rows
         # =====================
 
 
-        start_y = 50
+        start_y = 90
 
 
 
-        for row, name in enumerate(names):
+        for row, name in enumerate(
+
+            names
+
+        ):
 
 
             y = (
@@ -352,7 +532,9 @@ class AlignmentCanvas(tk.Frame):
 
             for i, base in enumerate(seq):
 
+
                 base = base.upper()
+
 
 
                 x = (
@@ -367,21 +549,61 @@ class AlignmentCanvas(tk.Frame):
 
 
 
+                # ---------------------
+                # Consensus comparison
+                # ---------------------
+
+                if i < len(consensus):
+
+
+                    if base == consensus[i]:
+
+                        display_base = "."
+
+
+                        color = "gray"
+
+
+
+                    else:
+
+
+                        display_base = base
+
+
+                        color = self.base_colors.get(
+
+                            base,
+
+                            "black"
+
+                        )
+
+
+                else:
+
+
+                    display_base = base
+
+                    color = self.base_colors.get(
+
+                        base,
+
+                        "black"
+
+                    )
+
+
+
                 self.canvas.create_text(
 
                     x,
 
                     y,
 
-                    text=base,
+                    text=display_base,
 
-                    fill=self.base_colors.get(
-
-                        base,
-
-                        "black"
-
-                    ),
+                    fill=color,
 
                     font=(
 
@@ -397,7 +619,9 @@ class AlignmentCanvas(tk.Frame):
 
 
 
-        # Scroll area
+        # =====================
+        # Scroll region
+        # =====================
 
 
         width = (
@@ -407,6 +631,10 @@ class AlignmentCanvas(tk.Frame):
             +
 
             max_length * self.base_width
+
+            +
+
+            50
 
         )
 
@@ -419,8 +647,11 @@ class AlignmentCanvas(tk.Frame):
 
             len(names) * self.row_height
 
-        )
+            +
 
+            30
+
+        )
 
 
         self.canvas.config(
@@ -438,3 +669,121 @@ class AlignmentCanvas(tk.Frame):
             )
 
         )
+
+
+    # ==================================================
+    # Alignment click event
+    # ==================================================
+
+    def on_click(
+        self,
+        event
+    ):
+
+
+        # Canvas coordinates
+        x = self.canvas.canvasx(
+            event.x
+        )
+
+        y = self.canvas.canvasy(
+            event.y
+        )
+
+
+        # Alignment rows start here
+        start_y = 90
+
+
+        if y < start_y:
+
+            return
+
+
+        row = int(
+
+            (y - start_y)
+
+            /
+
+            self.row_height
+
+        )
+
+
+        names = list(
+
+            self.alignment.keys()
+
+        )
+
+
+        if row >= len(names):
+
+            return
+
+
+        sample_name = names[row]
+
+
+        if x < self.name_width:
+
+            return
+
+
+        column = int(
+
+            (x - self.name_width)
+
+            /
+
+            self.base_width
+
+        )
+
+
+        sequence = self.alignment[
+
+            sample_name
+
+        ]
+
+
+        if column >= len(sequence):
+
+            return
+
+
+        base = sequence[column]
+
+
+        print(
+            "Clicked:"
+        )
+
+        print(
+            "Sample:",
+            sample_name
+        )
+
+        print(
+            "Alignment position:",
+            column + 1
+        )
+
+        print(
+            "Base:",
+            base
+        )
+
+        if self.click_callback:
+
+            self.click_callback(
+
+                sample_name,
+
+                column + 1,
+
+                base
+
+            )

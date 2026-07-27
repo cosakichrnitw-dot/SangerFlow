@@ -34,8 +34,6 @@ class SangerRead:
 
     hq_percent: float = 0.0
 
-    selected: bool = True
-
 
     # =====================
     # Trimming information
@@ -46,6 +44,19 @@ class SangerRead:
     trim_end: int = 0
 
     trimmed_sequence: str = ""
+
+    trimmed_quality: list = field(
+        default_factory=list
+    )
+
+    trimmed_base_positions: list = field(
+        default_factory=list
+    )
+
+    trimmed_traces: dict = field(
+        default_factory=dict
+    )
+
 
     # =====================
     # Optional flags
