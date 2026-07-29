@@ -140,6 +140,8 @@ class ChromatogramCanvas(tk.Frame):
 
         self.reads = []
 
+        self.visible_reads = []
+
         # Trim region display
 
         self.show_trim_region = False
@@ -160,12 +162,71 @@ class ChromatogramCanvas(tk.Frame):
 
         self.ruler_y = 5
 
+        self.zoom_factor = 1.2
+
+        # =====================
+        # Trim display state
+        # =====================
+
+        self.show_trim_region = False
+
         # =====================
         # Current position marker
         # =====================
 
         self.current_position = None
 
+        # Current position marker item
+
+        self.position_marker = None
+
+        # Highlight information
+
+        self.highlight_base = None
+
+        # =====================
+        # Mouse navigation
+        # =====================
+
+        self.canvas.bind(
+
+            "<MouseWheel>",
+
+            self.mouse_scroll
+
+        )
+
+
+        self.canvas.bind(
+
+            "<ButtonPress-2>",
+
+            self.pan_start
+
+        )
+
+
+        self.canvas.bind(
+
+            "<B2-Motion>",
+
+            self.pan_move
+
+        )
+
+
+        self.zoom_factor = 1.2
+
+        self.canvas.bind(
+            "<Shift-ButtonPress-1>",
+            self.pan_start
+        )
+
+
+        self.canvas.bind(
+            "<Shift-B1-Motion>",
+            self.pan_move
+        )
 
     # ==================================================
     # Load single read
@@ -209,6 +270,12 @@ class ChromatogramCanvas(tk.Frame):
         self.canvas.delete(
             "all"
         )
+
+        if self.visible_reads:
+            reads = self.visible_reads
+
+        else:
+            reads = self.reads
 
         self.label_canvas.delete(
             "all"
@@ -320,11 +387,16 @@ class ChromatogramCanvas(tk.Frame):
             ruler_y=self.ruler_y,
 
             y_offset=y_offset
-            )
+
+        )
+
 
         viewer.show_trim_region = (
+
             self.show_trim_region
+
         )
+
 
         viewer.draw()
 
@@ -346,6 +418,17 @@ class ChromatogramCanvas(tk.Frame):
 
         self.current_position = position
 
+        self.highlight_base = position - 1
+
+        # Remove previous marker
+
+        if self.position_marker is not None:
+
+            self.canvas.delete(
+
+                self.position_marker
+
+            )
 
 
         # Alignment position
@@ -359,7 +442,32 @@ class ChromatogramCanvas(tk.Frame):
 
         )
 
+        # Draw current position marker
 
+        bbox = self.canvas.bbox(
+            "all"
+        )
+
+
+        if bbox:
+
+            self.position_marker = self.canvas.create_line(
+
+                x,
+
+                bbox[1],
+
+                x,
+
+                bbox[3],
+
+                fill="purple",
+
+                width=2,
+
+                dash=(4,2)
+
+            )
 
         bbox = self.canvas.bbox(
             "all"
@@ -411,3 +519,185 @@ class ChromatogramCanvas(tk.Frame):
             fraction
 
         )
+
+    # ==================================================
+    # Change visible reads only
+    # ==================================================
+
+    def set_visible_reads(
+        self,
+        reads
+    ):
+
+        self.visible_reads = reads
+
+        self.draw()
+
+    # ==================================================
+    # Mouse scroll / Zoom
+    # ==================================================
+
+    def mouse_scroll(
+        self,
+        event
+    ):
+
+
+        # =====================
+        # Command + scroll Zoom
+        # =====================
+
+        if event.state & 0x0008:
+
+
+            if event.delta > 0:
+
+                self.scale_x *= self.zoom_factor
+
+
+            else:
+
+                self.scale_x /= self.zoom_factor
+
+
+
+            if self.scale_x < 0.3:
+
+                self.scale_x = 0.3
+
+
+            if self.scale_x > 20:
+
+                self.scale_x = 20
+
+
+
+            print(
+                "ZOOM:",
+                self.scale_x
+            )
+
+
+            self.draw()
+
+
+            return
+
+
+
+        # =====================
+        # Normal scroll
+        # =====================
+
+        if event.delta > 0:
+
+            self.canvas.yview_scroll(
+
+                -1,
+
+                "units"
+
+            )
+
+            self.label_canvas.yview_scroll(
+
+                -1,
+
+                "units"
+
+            )
+
+
+        else:
+
+            self.canvas.yview_scroll(
+
+                1,
+
+                "units"
+
+            )
+
+            self.label_canvas.yview_scroll(
+
+                1,
+
+                "units"
+
+            )
+
+
+    # ==================================================
+    # Middle mouse pan
+    # ==================================================
+
+    def pan_start(
+        self,
+        event
+    ):
+
+
+        self.canvas.scan_mark(
+
+            event.x,
+
+            event.y
+
+        )
+
+
+
+    def pan_move(
+        self,
+        event
+    ):
+
+
+        self.canvas.scan_dragto(
+
+            event.x,
+
+            event.y,
+
+            gain=1
+
+        )
+
+    # ==================================================
+    # Pan
+    # ==================================================
+
+    def pan_start(
+        self,
+        event
+    ):
+
+        self.canvas.scan_mark(
+            event.x,
+            event.y
+        )
+
+
+    def pan_move(
+        self,
+        event
+    ):
+
+        self.canvas.scan_dragto(
+            event.x,
+            event.y,
+            gain=1
+        )
+
+    # ==================================================
+    # Toggle Trim Region display
+    # ==================================================
+
+    def set_show_trim_region(
+        self,
+        value
+    ):
+
+        self.show_trim_region = value
+
+        self.draw()

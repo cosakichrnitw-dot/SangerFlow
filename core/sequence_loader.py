@@ -86,46 +86,6 @@ def load_ab1_folder(folder):
 
             print("")
 
-            print(
-                "========== Trim Report =========="
-            )
-
-            print(
-                "File:",
-                read.filename
-            )
-
-            print(
-                "Original length:",
-                len(read.sequence),
-                "bp"
-            )
-
-            print(
-                "Trim start:",
-                read.trim_start
-            )
-
-            print(
-                "Trim end:",
-                read.trim_end
-            )
-
-            print(
-                "Trimmed length:",
-                len(read.trimmed_sequence),
-                "bp"
-            )
-
-            print(
-                "HQ:",
-                f"{read.hq_percent:.1f}%"
-            )
-
-            print(
-                "================================"
-            )
-
 
             reads.append(
                 read

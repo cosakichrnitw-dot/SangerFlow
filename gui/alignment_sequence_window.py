@@ -1,27 +1,31 @@
 import tkinter as tk
 from tkinter import filedialog
 
-from gui.alignment_chromatogram_canvas import AlignmentChromatogramCanvas
+
+from gui.alignment_canvas import AlignmentCanvas
 
 from core.exporter import export_consensus_fasta
 
 
-class AlignmentWindow(tk.Toplevel):
+
+class AlignmentSequenceWindow(tk.Toplevel):
 
 
     def __init__(
         self,
         parent,
         alignment,
-        reads,
         click_callback=None
     ):
 
-        super().__init__(parent)
+
+        super().__init__(
+            parent
+        )
 
 
         self.title(
-            "MAFFT Chromatogram Alignment"
+            "MAFFT Sequence Alignment"
         )
 
 
@@ -31,8 +35,6 @@ class AlignmentWindow(tk.Toplevel):
 
 
         self.alignment = alignment
-
-        self.reads = reads
 
         self.click_callback = click_callback
 
@@ -46,6 +48,7 @@ class AlignmentWindow(tk.Toplevel):
             self
         )
 
+
         button_frame.pack(
             fill="x",
             pady=5
@@ -53,7 +56,7 @@ class AlignmentWindow(tk.Toplevel):
 
 
 
-        self.export_consensus_button = tk.Button(
+        self.export_button = tk.Button(
 
             button_frame,
 
@@ -64,7 +67,7 @@ class AlignmentWindow(tk.Toplevel):
         )
 
 
-        self.export_consensus_button.pack(
+        self.export_button.pack(
 
             side="left",
 
@@ -75,10 +78,10 @@ class AlignmentWindow(tk.Toplevel):
 
 
         # =====================
-        # Viewer
+        # Alignment Viewer
         # =====================
 
-        self.viewer = AlignmentChromatogramCanvas(
+        self.viewer = AlignmentCanvas(
 
             self,
 
@@ -101,31 +104,49 @@ class AlignmentWindow(tk.Toplevel):
 
 
 
-        # =====================
-        # Load alignment + chromatograms
-        # =====================
-
-        self.viewer.load_alignment_reads(
-
-            self.alignment,
-
-            self.reads
-
-        )
-
-
-        self.viewer.click_callback = (
-            self.alignment_clicked
-        )
-
+        self.load_alignment()
 
 
 
     # ==================================================
-    # Export Consensus FASTA
+    # Load alignment
     # ==================================================
 
-    def export_consensus(self):
+    def load_alignment(
+        self
+    ):
+
+
+        self.viewer.alignment = {}
+
+
+
+        for record in self.alignment:
+
+
+            self.viewer.alignment[
+
+                record.id
+
+            ] = str(
+
+                record.seq
+
+            )
+
+
+
+        self.viewer.draw()
+
+
+
+    # ==================================================
+    # Export consensus
+    # ==================================================
+
+    def export_consensus(
+        self
+    ):
 
 
         consensus = getattr(
@@ -143,7 +164,9 @@ class AlignmentWindow(tk.Toplevel):
 
 
             print(
+
                 "No consensus available."
+
             )
 
 
@@ -158,13 +181,19 @@ class AlignmentWindow(tk.Toplevel):
             filetypes=[
 
                 (
+
                     "FASTA files",
+
                     "*.fas"
+
                 ),
 
                 (
+
                     "FASTA files",
+
                     "*.fasta"
+
                 )
 
             ]
@@ -197,7 +226,6 @@ class AlignmentWindow(tk.Toplevel):
 
 
 
-
     # ==================================================
     # Alignment click callback
     # ==================================================
@@ -208,7 +236,7 @@ class AlignmentWindow(tk.Toplevel):
 
         sample_name,
 
-        trace_position,
+        position,
 
         base
 
@@ -216,12 +244,7 @@ class AlignmentWindow(tk.Toplevel):
 
 
         print(
-            "============================"
-        )
-
-
-        print(
-            "Alignment click"
+            "Sequence alignment click"
         )
 
 
@@ -232,19 +255,14 @@ class AlignmentWindow(tk.Toplevel):
 
 
         print(
-            "Trace position:",
-            trace_position
+            "Position:",
+            position
         )
 
 
         print(
             "Base:",
             base
-        )
-
-
-        print(
-            "============================"
         )
 
 
@@ -256,25 +274,8 @@ class AlignmentWindow(tk.Toplevel):
 
                 sample_name,
 
-                trace_position,
+                position,
 
                 base
-
-            )
-
-    def goto_trace_position(
-        self,
-        sample_name,
-        trace_position
-    ):
-
-
-        if self.viewer:
-
-            self.viewer.goto_trace_position(
-
-                sample_name,
-
-                trace_position
 
             )

@@ -56,22 +56,6 @@ def align_reads(reads):
     )
 
 
-    print(
-        "========== MAFFT INPUT =========="
-    )
-
-
-    print(
-        fasta
-    )
-
-
-    print(
-        "=================================="
-    )
-
-
-
     result = subprocess.run(
 
         [
@@ -127,3 +111,92 @@ def convert_alignment_to_dict(alignment):
 
 
     return result
+
+# ==================================================
+# Align existing FASTA file
+# ==================================================
+
+def align_fasta(
+    filepath
+):
+    """
+    Align existing FASTA sequences using MAFFT.
+
+    Parameters
+    ----------
+    filepath : str
+        FASTA file path
+
+    Returns
+    -------
+    MultipleSeqAlignment
+        MAFFT alignment result
+    """
+
+
+    with open(
+        filepath,
+        "r"
+    ) as f:
+
+        fasta = f.read()
+
+
+
+    print(
+        "========== FASTA MAFFT INPUT =========="
+    )
+
+
+    print(
+        fasta
+    )
+
+
+    print(
+        "========================================"
+    )
+
+
+
+    result = subprocess.run(
+
+        [
+
+            "mafft",
+
+            "--auto",
+
+            "-"
+
+        ],
+
+        input=fasta,
+
+        text=True,
+
+        capture_output=True
+
+    )
+
+
+    if result.returncode != 0:
+
+        raise RuntimeError(
+
+            result.stderr
+
+        )
+
+
+
+    alignment = AlignIO.read(
+
+        StringIO(result.stdout),
+
+        "fasta"
+
+    )
+
+
+    return alignment

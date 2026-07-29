@@ -8,7 +8,9 @@ from core.chromatogram_alignment import align_reads
 from core.alignment_mapper import (
     alignment_to_trace_positions
 )
-
+from core.consensus import (
+    build_quality_consensus
+)
 
 
 class AlignmentChromatogramCanvas(tk.Frame):
@@ -54,6 +56,9 @@ class AlignmentChromatogramCanvas(tk.Frame):
 
         self.maps = {}
 
+        self.consensus = ""
+
+        self.confidence = []
 
 
         # =====================
@@ -103,7 +108,14 @@ class AlignmentChromatogramCanvas(tk.Frame):
             expand=True
         )
 
+        # =====================
+        # Mouse click event
+        # =====================
 
+        self.canvas.bind(
+            "<Button-1>",
+            self.on_click
+        )
 
     # ==================================================
     # Load reads
@@ -217,7 +229,87 @@ class AlignmentChromatogramCanvas(tk.Frame):
 
             return
 
+        # =====================
+        # Quality Consensus
+        # =====================
 
+        self.consensus, self.confidence = build_quality_consensus(
+
+            self.reads,
+
+            self.alignment
+
+        )
+
+        # =====================
+        # Draw consensus
+        # =====================
+
+        consensus_y = 60
+
+
+        self.canvas.create_text(
+
+            5,
+
+            consensus_y,
+
+            text="Consensus",
+
+            anchor="w",
+
+            font=(
+
+                "Courier",
+
+                10,
+
+                "bold"
+
+            )
+
+        )
+
+
+        for i, base in enumerate(
+
+            self.consensus
+
+        ):
+
+
+            x = self.trace_to_canvas_x(
+
+                i + 1
+
+            )
+
+
+            self.canvas.create_text(
+
+                x,
+
+                consensus_y,
+
+                text=base,
+
+                font=(
+
+                    "Courier",
+
+                    10,
+
+                    "bold"
+
+                ),
+
+                fill=self.base_color(
+
+                    base
+
+                )
+
+            )
 
         for row, record in enumerate(
             self.alignment
@@ -250,15 +342,6 @@ class AlignmentChromatogramCanvas(tk.Frame):
             aligned_seq = str(record.seq)
 
 
-
-            print(
-                "ALIGNMENT DEBUG:",
-                name,
-                aligned_seq[:100]
-            )
-
-
-
             mapping = self.maps.get(
                 name
             )
@@ -278,7 +361,7 @@ class AlignmentChromatogramCanvas(tk.Frame):
 
                 +
 
-                100
+                170
 
             )
 
@@ -649,3 +732,184 @@ class AlignmentChromatogramCanvas(tk.Frame):
                     smooth=True
 
                 )
+
+    # ==================================================
+    # Alignment click event
+    # ==================================================
+
+    def on_click(
+        self,
+        event
+    ):
+
+
+        x = self.canvas.canvasx(
+            event.x
+        )
+
+        y = self.canvas.canvasy(
+            event.y
+        )
+
+
+        # row判定
+
+        row = int(
+
+            y
+            /
+            self.row_height
+
+        )
+
+
+        if row >= len(self.alignment):
+
+            return
+
+
+
+        record = list(
+            self.alignment
+        )[row]
+
+
+        sample_name = record.id
+
+
+
+        # alignment column
+
+        if x < self.name_width:
+
+            return
+
+
+
+        column = int(
+
+            (
+                x
+                -
+                self.name_width
+
+            )
+            /
+            self.base_width
+
+        ) + 1
+
+
+
+        sequence = str(
+            record.seq
+        )
+
+
+        if column > len(sequence):
+
+            return
+
+
+
+        base = sequence[
+            column-1
+        ]
+
+
+
+        trace_position = None
+
+
+
+        if sample_name in self.maps:
+
+
+            trace_position = self.maps[sample_name].get(
+
+                column
+
+            )
+
+
+
+        print(
+            "============================"
+        )
+
+        print(
+            "Alignment click"
+        )
+
+        print(
+            "Sample:",
+            sample_name
+        )
+
+        print(
+            "Alignment position:",
+            column
+        )
+
+        print(
+            "Trace position:",
+            trace_position
+        )
+
+        print(
+            "Base:",
+            base
+        )
+
+        print(
+            "============================"
+        )
+
+
+
+        if self.click_callback:
+
+
+            self.click_callback(
+
+                sample_name,
+
+                trace_position,
+
+                base
+
+            )
+
+    def goto_trace_position(
+        self,
+        sample_name,
+        trace_position
+    ):
+
+
+        for name, mapping in self.maps.items():
+
+
+            if name == sample_name:
+
+
+                for col, pos in mapping.items():
+
+
+                    if pos == trace_position:
+
+
+                        x = self.trace_to_canvas_x(
+                            col
+                        )
+
+
+                        self.canvas.xview_moveto(
+
+                            x /
+                            self.canvas.bbox("all")[2]
+
+                        )
+
+
+                        return

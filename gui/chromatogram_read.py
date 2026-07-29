@@ -29,7 +29,11 @@ class ChromatogramRead:
 
         self.y_offset = y_offset
 
-        self.show_trim_region = False
+        # =====================
+        # Highlight position
+        # =====================
+
+        self.highlight_position = None
 
         # =====================
         # Shared trace coordinate
@@ -204,7 +208,20 @@ class ChromatogramRead:
             return
 
 
-        positions = self.read.base_positions
+        if hasattr(
+            self.read,
+            "trimmed_base_positions"
+        ):
+
+            positions = (
+                self.read.trimmed_base_positions
+            )
+
+        else:
+
+            positions = (
+                self.read.base_positions
+            )
 
 
         if len(positions) == 0:
@@ -320,29 +337,47 @@ class ChromatogramRead:
 
     def draw_sequence(self):
 
-
         colors = {
 
             "A":"green",
-
             "C":"blue",
-
             "G":"black",
-
             "T":"red"
 
         }
 
 
+        if hasattr(
+            self.read,
+            "trimmed_sequence"
+        ):
+
+            sequence = (
+                self.read.trimmed_sequence
+            )
+
+            positions = (
+                self.read.trimmed_base_positions
+            )
+
+        else:
+
+            sequence = (
+                self.read.sequence
+            )
+
+            positions = (
+                self.read.base_positions
+            )
+
 
         for base, pos in zip(
 
-            self.read.sequence,
+            sequence,
 
-            self.read.base_positions
+            positions
 
         ):
-
 
             x = (
 
@@ -352,7 +387,43 @@ class ChromatogramRead:
 
             )
 
+            # =====================
+            # Highlight selected base
+            # =====================
 
+            if (
+
+                self.highlight_position is not None
+
+                and
+
+                abs(
+                    pos -
+                    self.highlight_position
+                ) < 5
+
+            ):
+
+                self.canvas.create_rectangle(
+
+                    x - 8,
+
+                    self.sequence_y + self.y_offset - 12,
+
+                    x + 8,
+
+                    self.sequence_y + self.y_offset + 12,
+
+                    fill="yellow",
+
+                    outline=""
+
+                )
+
+
+            # =====================
+            # Draw base letter
+            # =====================
 
             self.canvas.create_text(
 
@@ -363,8 +434,11 @@ class ChromatogramRead:
                 text=base,
 
                 fill=colors.get(
+
                     base,
+
                     "black"
+
                 ),
 
                 font=(
@@ -378,8 +452,6 @@ class ChromatogramRead:
                 )
 
             )
-
-
 
     # ==================================================
     # Trace
@@ -413,11 +485,24 @@ class ChromatogramRead:
 
 
 
-            signal = np.array(
+            if hasattr(
+                self.read,
+                "trimmed_traces"
+            ):
 
-                self.read.traces[base]
+                signal = np.array(
 
-            )
+                    self.read.trimmed_traces[base]
+
+                )
+
+            else:
+
+                signal = np.array(
+
+                    self.read.traces[base]
+
+                )
 
 
 
@@ -481,8 +566,6 @@ class ChromatogramRead:
                     ]
 
                 )
-
-
 
             self.canvas.create_line(
 

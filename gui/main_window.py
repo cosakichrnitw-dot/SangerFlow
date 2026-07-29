@@ -1,22 +1,25 @@
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
-from core.ab1_reader import read_ab1
-from core.trimming import trim_sequence
-from core.quality import (
-    calculate_hq_percent,
-    calculate_average_quality,
-    calculate_q20_rate,
-    calculate_q30_rate
+from core.blast_controller import (
+    run_blast_folder
 )
+
+
+from core.sequence_loader import (
+    load_ab1_file,
+    load_ab1_folder
+)
+
 
 from gui.chromatogram_canvas import ChromatogramCanvas
 from gui.status_bar import StatusBar
 from gui.sample_panel import SamplePanel
 from gui.quality_panel import QualityPanel
 from gui.alignment_window import AlignmentWindow
-
-
+from gui.button_bar import ButtonBar
+from gui.blast_dialog import BlastDialog
+from gui.alignment_sequence_window import AlignmentSequenceWindow
 
 class MainWindow:
 
@@ -27,7 +30,7 @@ class MainWindow:
 
 
         self.root.title(
-            "SangerFlow v0.6"
+            "SangerFlow v0.8"
         )
 
 
@@ -37,88 +40,39 @@ class MainWindow:
 
 
         # =====================
-        # Button frame
+        # Button Bar
         # =====================
 
-        self.button_frame = tk.Frame(
-            root
-        )
+        self.button_bar = ButtonBar(
 
-        self.button_frame.pack(
-            pady=5
-        )
+            root,
 
+            {
 
-        self.open_button = tk.Button(
-            self.button_frame,
-            text="Open AB1",
-            command=self.open_file,
-            width=15
-        )
+                "open_file":
+                    self.open_file,
 
-        self.open_button.pack(
-            side="left",
-            padx=5
-        )
+                "open_folder":
+                    self.open_folder,
 
+                "open_alignment":
+                    self.open_alignment,
 
-        self.folder_button = tk.Button(
-            self.button_frame,
-            text="Open Folder",
-            command=self.open_folder,
-            width=15
-        )
+                "align_chromatograms":
+                    self.align_chromatograms,
 
-        self.folder_button.pack(
-            side="left",
-            padx=5
-        )
+                "toggle_trim_region":
+                    self.toggle_trim_region,
 
-        self.alignment_button = tk.Button(
+                "open_blast_dialog":
+                    self.open_blast_dialog,
 
-            self.button_frame,
+                "open_quality_panel":
+                    self.open_quality_panel
 
-            text="Open Alignment",
-
-            command=self.open_alignment,
-
-            width=15
+            }
 
         )
-
-
-        self.alignment_button.pack(
-
-            side="left",
-
-            padx=5
-
-        )
-
-        self.trim_view_button = tk.Button(
-            self.button_frame,
-            text="Show Trim Region",
-            command=self.toggle_trim_region,
-            width=15
-        )
-
-        self.trim_view_button.pack(
-            side="left",
-            padx=5
-        )
-
-        self.quality_button = tk.Button(
-            self.button_frame,
-            text="Quality Report",
-            command=self.open_quality_panel,
-            width=15
-        )
-
-        self.quality_button.pack(
-            side="left",
-            padx=5
-        )
-
 
         # =====================
         # Main area
@@ -201,37 +155,24 @@ class MainWindow:
 
 
 
-        result = read_ab1(
+        result = load_ab1_file(
+
             filepath
+
         )
 
 
-        trim_sequence(
-            result
-        )
+
+        self.current_read = result
 
 
-        result.hq_percent = calculate_hq_percent(
-            result
-        )
-
-        result.average_quality = (
-            calculate_average_quality(result)
-        )
-
-
-        result.q20_rate = (
-            calculate_q20_rate(result)
-        )
-
-
-        result.q30_rate = (
-            calculate_q30_rate(result)
-        )
 
         self.chrom_viewer.load_data(
+
             result
+
         )
+
 
 
         self.status_bar.set_text(
@@ -242,8 +183,6 @@ class MainWindow:
             f"HQ% {result.hq_percent:.1f}%"
 
         )
-
-
 
     # ==================================================
     # Open folder
@@ -261,137 +200,11 @@ class MainWindow:
 
 
 
-        from pathlib import Path
+        reads = load_ab1_folder(
 
+            folder
 
-        reads = []
-
-
-
-        for filepath in sorted(
-
-            Path(folder).glob("*.ab1")
-
-        ):
-
-
-            try:
-
-
-                read = read_ab1(
-
-                    filepath
-
-                )
-
-
-
-                trim_sequence(
-
-                    read
-
-                )
-
-
-
-                read.hq_percent = calculate_hq_percent(
-
-                    read
-
-                )
-                read.average_quality = (
-                    calculate_average_quality(read)
-                )
-
-
-                read.q20_rate = (
-                    calculate_q20_rate(read)
-                )
-
-
-                read.q30_rate = (
-                    calculate_q30_rate(read)
-                )
-
-
-                # =====================
-                # Trim Report
-                # =====================
-
-                print("")
-
-                print(
-                    "========== Trim Report =========="
-                )
-
-
-                print(
-                    "File:",
-                    read.filename
-                )
-
-
-                print(
-                    "Original length:",
-                    len(read.sequence),
-                    "bp"
-                )
-
-
-                print(
-                    "Trim start:",
-                    read.trim_start
-                )
-
-
-                print(
-                    "Trim end:",
-                    read.trim_end
-                )
-
-
-                print(
-                    "Trimmed length:",
-                    len(read.trimmed_sequence),
-                    "bp"
-                )
-
-
-                print(
-                    "HQ%:",
-                    f"{read.hq_percent:.1f}%"
-                )
-
-
-                print(
-                    "================================"
-                )
-
-
-                print("")
-
-
-
-                reads.append(
-
-                    read
-
-                )
-
-
-
-            except Exception as e:
-
-
-                print(
-
-                    f"Failed: {filepath.name}"
-
-                )
-
-
-                print(e)
-
+        )
 
 
 
@@ -399,40 +212,71 @@ class MainWindow:
 
 
             print(
+
                 "No AB1 files found."
+
             )
 
             return
 
 
 
+        # =====================
+        # Keep all samples
+        # =====================
 
-        self.chrom_viewer.load_reads(
+        self.all_reads = reads
 
-            reads
 
-        )
+        # Current viewer selection
+        # 初期状態は全表示
+
+        self.selected_reads = reads
+
 
 
         self.reads = reads
 
 
 
-        self.sample_panel.update_samples(
+        # =====================
+        # Viewer
+        # =====================
 
-            reads
+        self.chrom_viewer.load_reads(
+
+            self.selected_reads
 
         )
 
 
+
+        self.current_read = reads[0]
+
+
+
+        # =====================
+        # Sample Panel
+        # 常に全サンプルを保持
+        # =====================
+
+        self.sample_panel.update_samples(
+
+            self.all_reads
+
+        )
+
+        self.sample_panel.set_callback(
+
+            self.sample_selected
+
+        )
 
         self.status_bar.set_text(
 
             f"{len(reads)} samples loaded"
 
         )
-
-
 
     # ==================================================
     # Toggle Trim Region
@@ -450,8 +294,129 @@ class MainWindow:
 
         self.chrom_viewer.draw()
 
+
+
     # ==================================================
-    # Open Alignment
+    # Open BLAST Dialog
+    # ==================================================
+
+    def open_blast_dialog(self):
+
+
+        dialog = BlastDialog(
+            self.root
+        )
+
+
+        self.root.wait_window(
+            dialog
+        )
+
+
+        if dialog.result is None:
+
+            return
+
+
+
+        self.blast_settings = dialog.result
+
+
+
+        print(
+            "BLAST settings:",
+            self.blast_settings
+        )
+
+
+
+        try:
+
+            # ============================
+            # FASTA BLAST
+            # ============================
+
+            if self.blast_settings["target"] == "fasta":
+
+
+                from core.blast import blast_fasta
+
+
+                print(
+                    "Running FASTA BLAST..."
+                )
+
+
+                results = blast_fasta(
+
+                    self.blast_settings["input_path"],
+
+                    database=self.blast_settings["database"],
+
+                    max_hits=self.blast_settings["hits"]
+
+                )
+
+
+                from core.blast_exporter import export_blast_excel
+
+
+                export_blast_excel(
+
+                    results,
+
+                    [],
+
+                    self.blast_settings["save_path"]
+
+                )
+
+
+            # ============================
+            # Folder BLAST
+            # ============================
+
+            elif self.blast_settings["target"] == "folder":
+
+
+                run_blast_folder(
+
+                    self.blast_settings["input_path"],
+
+                    self.blast_settings["save_path"],
+
+                    hits=self.blast_settings["hits"],
+
+                    database=self.blast_settings["database"]
+
+                )
+
+
+
+            messagebox.showinfo(
+
+                "BLAST completed",
+
+                "Excel exported successfully."
+
+            )
+
+
+
+        except Exception as e:
+
+
+            messagebox.showerror(
+
+                "BLAST Error",
+
+                str(e)
+
+            )
+
+
+    # ==================================================
+    # Open Alignment (FASTA)
     # ==================================================
 
     def open_alignment(self):
@@ -462,8 +427,11 @@ class MainWindow:
             filetypes=[
 
                 (
+
                     "FASTA files",
+
                     "*.fas *.fasta"
+
                 )
 
             ]
@@ -476,13 +444,150 @@ class MainWindow:
             return
 
 
-        AlignmentWindow(
+
+        from core.chromatogram_alignment import align_fasta
+
+        from gui.alignment_sequence_window import AlignmentSequenceWindow
+
+
+
+        print(
+
+            "Running FASTA MAFFT alignment..."
+
+        )
+
+
+
+        try:
+
+
+            alignment = align_fasta(
+
+                filepath
+
+            )
+
+
+        except Exception as e:
+
+
+            messagebox.showerror(
+
+                "Alignment Error",
+
+                str(e)
+
+            )
+
+            return
+
+
+
+        print(
+
+            "FASTA alignment finished."
+
+        )
+
+
+
+        AlignmentSequenceWindow(
 
             self.root,
 
-            filepath
+            alignment
 
         )
+    # ==================================================
+    # Align chromatograms
+    # ==================================================
+
+    def align_chromatograms(self):
+
+        if not hasattr(self, "reads"):
+
+            print("No AB1 reads loaded.")
+            return
+
+        from core.chromatogram_alignment import align_reads
+
+        reads = getattr(
+            self,
+            "selected_reads",
+            self.reads
+        )
+
+        if len(reads) == 0:
+
+            print("No samples selected.")
+            return
+
+        alignment = align_reads(
+            reads
+        )
+
+        AlignmentWindow(
+            self.root,
+            alignment=alignment,
+            reads=reads,
+            click_callback=self.alignment_clicked
+        )
+
+    # ==================================================
+    # Alignment click receiver
+    # ==================================================
+
+    def alignment_clicked(
+
+        self,
+
+        sample_name,
+
+        position,
+
+        base
+
+    ):
+
+
+        print(
+            "MainWindow received:"
+        )
+
+
+        print(
+            "Sample:",
+            sample_name
+        )
+
+
+        print(
+            "Alignment position:",
+            position
+        )
+
+
+        print(
+            "Base:",
+            base
+        )
+
+
+        if hasattr(
+
+            self,
+
+            "chrom_viewer"
+
+        ):
+
+
+            self.chrom_viewer.goto_position(
+
+                position
+
+            )
         
     # ==================================================
     # Open Quality Panel
@@ -490,15 +595,201 @@ class MainWindow:
 
     def open_quality_panel(self):
 
+
         if not hasattr(
+
             self,
-            "reads"
+
+            "all_reads"
+
         ):
 
             return
 
 
-        QualityPanel(
+
+        panel = QualityPanel(
+
             self.root,
-            self.reads
+
+            self.all_reads
+
         )
+
+
+        panel.set_apply_callback(
+
+            self.apply_quality_selection
+
+        )
+
+    # ==================================================
+    # Apply QualityPanel selection
+    # ==================================================
+
+    def apply_quality_selection(
+
+        self,
+
+        selected_reads
+
+    ):
+
+
+        if len(selected_reads) == 0:
+
+            return
+
+
+
+        self.selected_reads = selected_reads
+
+
+
+        self.chrom_viewer.load_reads(
+
+            selected_reads
+
+        )
+
+
+
+        self.status_bar.set_text(
+
+            f"{len(selected_reads)} reads applied"
+
+        )
+
+    # ==================================================
+    # Apply HQ filter
+    # ==================================================
+
+    def apply_quality_filter(
+        self,
+        filtered_reads
+    ):
+
+        self.selected_reads = filtered_reads
+
+        self.sample_panel.update_samples(
+            filtered_reads
+        )
+
+        self.chrom_viewer.load_reads(
+            filtered_reads
+        )
+
+        self.status_bar.set_text(
+            f"{len(filtered_reads)} samples selected"
+        )
+
+    # ==================================================
+    # SamplePanel selection changed
+    # ==================================================
+
+    def sample_selected(
+
+        self,
+
+        selected_reads
+
+    ):
+
+
+        if len(selected_reads) == 0:
+
+            return
+
+
+
+        self.selected_reads = selected_reads
+
+
+
+        self.chrom_viewer.load_reads(
+
+            selected_reads
+
+        )
+
+
+
+        self.status_bar.set_text(
+
+            f"{len(selected_reads)} samples displayed"
+
+        )
+
+    # ==================================================
+    # Alignment click callback
+    # ==================================================
+
+    def alignment_clicked(
+        self,
+        sample_name,
+        trace_position,
+        base
+    ):
+
+
+        print(
+            "MainViewer jump request:"
+        )
+
+        print(
+            sample_name,
+            trace_position,
+            base
+        )
+
+
+        if trace_position is None:
+
+            return
+
+
+        for read in self.reads:
+
+
+            if read.filename == sample_name:
+
+
+                self.current_read = read
+
+
+                self.chrom_viewer.load_data(
+                    read
+                )
+
+
+                self.chrom_viewer.goto_position(
+                    trace_position
+                )
+
+
+                break
+
+    # ==================================================
+    # MainViewer click callback
+    # ==================================================
+
+    def main_viewer_clicked(
+        self,
+        sample_name,
+        trace_position
+    ):
+
+
+        if hasattr(
+            self,
+            "alignment_window"
+        ):
+
+
+            self.alignment_window.goto_trace_position(
+
+                sample_name,
+
+                trace_position
+
+            )

@@ -42,6 +42,8 @@ class QualityPanel(tk.Toplevel):
 
         self.check_vars = []
 
+        self.apply_callback = None
+
 
 
         # =====================
@@ -148,6 +150,25 @@ class QualityPanel(tk.Toplevel):
 
         )
 
+        self.apply_button = tk.Button(
+
+            bottom,
+
+            text="Apply to Viewer",
+
+            command=self.apply_to_viewer
+
+        )
+
+
+        self.apply_button.pack(
+
+            side="left",
+
+            padx=10
+
+        )
+
         self.export_button = tk.Button(
             bottom,
             text="Export Selected FASTA",
@@ -193,6 +214,38 @@ class QualityPanel(tk.Toplevel):
             side="left",
             padx=10
         )
+
+        self.apply_button = tk.Button(
+
+            bottom,
+
+            text="Apply to Viewer",
+
+            command=self.apply_selection
+
+        )
+
+
+        self.apply_button.pack(
+
+            side="left",
+
+            padx=10
+
+        )
+
+        self.apply_callback = None
+
+    # ==================================================
+    # Register apply callback
+    # ==================================================
+
+    def set_apply_callback(
+        self,
+        callback
+    ):
+
+        self.apply_callback = callback
 
     # ==================================================
     # Create rows
@@ -647,3 +700,64 @@ class QualityPanel(tk.Toplevel):
             print(
                 "MAFFT failed."
             )
+
+    # ==================================================
+    # Apply selection to Main Viewer
+    # ==================================================
+
+    def apply_to_viewer(
+        self
+    ):
+
+        selected = self.get_selected_reads()
+
+
+        if self.apply_callback is not None:
+
+            self.apply_callback(
+
+                selected
+
+            )
+
+
+        print(
+            f"Applied {len(selected)} reads to viewer."
+        )
+
+    # ==================================================
+    # Register Apply callback
+    # ==================================================
+
+    def set_apply_callback(
+
+        self,
+
+        callback
+
+    ):
+
+        self.apply_callback = callback
+
+    # ==================================================
+    # Apply selection to Main Viewer
+    # ==================================================
+
+    def apply_selection(self):
+
+
+        selected = self.get_selected_reads()
+
+
+
+        if self.apply_callback is None:
+
+            return
+
+
+
+        self.apply_callback(
+
+            selected
+
+        )
