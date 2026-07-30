@@ -61,20 +61,22 @@ class ChromatogramRead:
 
     def draw(self):
 
-        # Trim display
-        if self.show_trim_region:
-            self.draw_trim_region()
-
 
         # Quality background
         self.draw_quality_overlay()
 
 
-        # Chromatogram
+        # Trim Region
+        if self.show_trim_region:
+
+            self.draw_trim_region()
+
+
+        # Raw chromatogram
         self.draw_traces()
 
 
-        # Bases
+        # Raw bases
         self.draw_sequence()
 
 
@@ -208,20 +210,9 @@ class ChromatogramRead:
             return
 
 
-        if hasattr(
-            self.read,
-            "trimmed_base_positions"
-        ):
-
-            positions = (
-                self.read.trimmed_base_positions
-            )
-
-        else:
-
-            positions = (
-                self.read.base_positions
-            )
+        positions = (
+            self.read.base_positions
+        )
 
 
         if len(positions) == 0:
@@ -347,28 +338,13 @@ class ChromatogramRead:
         }
 
 
-        if hasattr(
-            self.read,
-            "trimmed_sequence"
-        ):
+        sequence = (
+            self.read.sequence
+        )
 
-            sequence = (
-                self.read.trimmed_sequence
-            )
-
-            positions = (
-                self.read.trimmed_base_positions
-            )
-
-        else:
-
-            sequence = (
-                self.read.sequence
-            )
-
-            positions = (
-                self.read.base_positions
-            )
+        positions = (
+            self.read.base_positions
+        )
 
 
         for base, pos in zip(
@@ -485,24 +461,11 @@ class ChromatogramRead:
 
 
 
-            if hasattr(
-                self.read,
-                "trimmed_traces"
-            ):
+            signal = np.array(
 
-                signal = np.array(
+                self.read.traces[base]
 
-                    self.read.trimmed_traces[base]
-
-                )
-
-            else:
-
-                signal = np.array(
-
-                    self.read.traces[base]
-
-                )
+            )
 
 
 
