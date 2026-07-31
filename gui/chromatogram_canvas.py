@@ -78,14 +78,19 @@ class ChromatogramCanvas(tk.Frame):
         )
 
         # =====================
-        # Right scale panel
+        # APE-style scale bars
         # =====================
+
+        # Two thin vertical controls placed side by side.
+        # They intentionally use the same native scrollbar style
+        # as the horizontal scrollbar at the bottom.
 
         self.scale_panel = tk.Frame(
             self.main_frame,
-            width=95,
-            relief="groove",
-            borderwidth=1
+            width=38,
+            bg="#F2F2F2",
+            relief="flat",
+            borderwidth=0
         )
 
         self.scale_panel.pack(
@@ -97,81 +102,72 @@ class ChromatogramCanvas(tk.Frame):
             False
         )
 
-        tk.Label(
+        self.scale_bars_frame = tk.Frame(
             self.scale_panel,
-            text="Y Scale",
-            font=(
-                "Arial",
-                9,
-                "bold"
-            )
-        ).pack(
-            pady=(
-                8,
-                0
-            )
+            bg="#F2F2F2"
         )
 
-        self.y_scale_var = tk.DoubleVar(
-            value=self.scale_y
+        self.scale_bars_frame.pack(
+            side="top",
+            fill="both",
+            expand=True
         )
 
-        self.y_scale_slider = tk.Scale(
-            self.scale_panel,
-            from_=3.0,
-            to=0.5,
-            resolution=0.1,
+        self.y_scale_scrollbar = tk.Scrollbar(
+            self.scale_bars_frame,
             orient="vertical",
-            variable=self.y_scale_var,
-            command=self.change_y_scale,
-            length=220,
-            showvalue=True
+            command=self._on_y_scale_scroll
         )
 
-        self.y_scale_slider.pack(
-            pady=(
-                0,
-                12
-            )
+        self.y_scale_scrollbar.pack(
+            side="left",
+            fill="y",
+            expand=True
+        )
+
+        self.x_scale_scrollbar = tk.Scrollbar(
+            self.scale_bars_frame,
+            orient="vertical",
+            command=self._on_x_scale_scroll
+        )
+
+        self.x_scale_scrollbar.pack(
+            side="left",
+            fill="y",
+            expand=True
+        )
+
+        self.scale_labels_frame = tk.Frame(
+            self.scale_panel,
+            bg="#F2F2F2"
+        )
+
+        self.scale_labels_frame.pack(
+            side="bottom",
+            fill="x"
         )
 
         tk.Label(
-            self.scale_panel,
-            text="X Scale",
-            font=(
-                "Arial",
-                9,
-                "bold"
-            )
+            self.scale_labels_frame,
+            text="y",
+            font=("Arial", 9),
+            bg="#F2F2F2"
         ).pack(
-            pady=(
-                0,
-                0
-            )
+            side="left",
+            expand=True
         )
 
-        self.x_scale_var = tk.DoubleVar(
-            value=self.scale_x
+        tk.Label(
+            self.scale_labels_frame,
+            text="x",
+            font=("Arial", 9),
+            bg="#F2F2F2"
+        ).pack(
+            side="left",
+            expand=True
         )
 
-        self.x_scale_slider = tk.Scale(
-            self.scale_panel,
-            from_=20.0,
-            to=0.3,
-            resolution=0.1,
-            orient="vertical",
-            variable=self.x_scale_var,
-            command=self.change_x_scale,
-            length=220,
-            showvalue=True
-        )
-
-        self.x_scale_slider.pack(
-            pady=(
-                0,
-                8
-            )
-        )
+        self._update_scale_scrollbars()
 
         # =====================
         # Chromatogram canvas
@@ -265,6 +261,194 @@ class ChromatogramCanvas(tk.Frame):
     # Scale callbacks
     # ==================================================
 
+    X_SCALE_MIN = 0.3
+    X_SCALE_MAX = 20.0
+    Y_SCALE_MIN = 0.5
+    Y_SCALE_MAX = 3.0
+    SCALE_THUMB_SIZE = 0.08
+
+    def _value_to_scroll_fraction(
+        self,
+        value,
+        minimum,
+        maximum
+    ):
+
+        if maximum <= minimum:
+
+            return 0.0
+
+        return min(
+            1.0,
+            max(
+                0.0,
+                (
+                    maximum
+                    -
+                    value
+                )
+                /
+                (
+                    maximum
+                    -
+                    minimum
+                )
+            )
+        )
+
+    def _scroll_fraction_to_value(
+        self,
+        fraction,
+        minimum,
+        maximum
+    ):
+
+        fraction = min(
+            1.0,
+            max(
+                0.0,
+                fraction
+            )
+        )
+
+        return (
+            maximum
+            -
+            fraction
+            *
+            (
+                maximum
+                -
+                minimum
+            )
+        )
+
+    def _apply_scroll_command(
+        self,
+        args,
+        current_fraction
+    ):
+
+        if not args:
+
+            return current_fraction
+
+        if args[0] == "moveto":
+
+            return float(
+                args[1]
+            )
+
+        if args[0] == "scroll":
+
+            amount = int(
+                args[1]
+            )
+
+            unit = args[2]
+
+            step = (
+                0.10
+                if unit == "pages"
+                else 0.02
+            )
+
+            return (
+                current_fraction
+                +
+                amount
+                *
+                step
+            )
+
+        return current_fraction
+
+    def _update_scale_scrollbars(self):
+
+        y_fraction = self._value_to_scroll_fraction(
+            self.scale_y,
+            self.Y_SCALE_MIN,
+            self.Y_SCALE_MAX
+        )
+
+        x_fraction = self._value_to_scroll_fraction(
+            self.scale_x,
+            self.X_SCALE_MIN,
+            self.X_SCALE_MAX
+        )
+
+        self.y_scale_scrollbar.set(
+            y_fraction,
+            min(
+                1.0,
+                y_fraction
+                +
+                self.SCALE_THUMB_SIZE
+            )
+        )
+
+        self.x_scale_scrollbar.set(
+            x_fraction,
+            min(
+                1.0,
+                x_fraction
+                +
+                self.SCALE_THUMB_SIZE
+            )
+        )
+
+    def _on_x_scale_scroll(
+        self,
+        *args
+    ):
+
+        current_fraction = self._value_to_scroll_fraction(
+            self.scale_x,
+            self.X_SCALE_MIN,
+            self.X_SCALE_MAX
+        )
+
+        fraction = self._apply_scroll_command(
+            args,
+            current_fraction
+        )
+
+        value = self._scroll_fraction_to_value(
+            fraction,
+            self.X_SCALE_MIN,
+            self.X_SCALE_MAX
+        )
+
+        self.change_x_scale(
+            value
+        )
+
+    def _on_y_scale_scroll(
+        self,
+        *args
+    ):
+
+        current_fraction = self._value_to_scroll_fraction(
+            self.scale_y,
+            self.Y_SCALE_MIN,
+            self.Y_SCALE_MAX
+        )
+
+        fraction = self._apply_scroll_command(
+            args,
+            current_fraction
+        )
+
+        value = self._scroll_fraction_to_value(
+            fraction,
+            self.Y_SCALE_MIN,
+            self.Y_SCALE_MAX
+        )
+
+        self.change_y_scale(
+            value
+        )
+
     def change_x_scale(
         self,
         value
@@ -272,10 +456,15 @@ class ChromatogramCanvas(tk.Frame):
 
         old_center = self._get_horizontal_center_fraction()
 
-        self.scale_x = float(
-            value
+        self.scale_x = min(
+            self.X_SCALE_MAX,
+            max(
+                self.X_SCALE_MIN,
+                float(value)
+            )
         )
 
+        self._update_scale_scrollbars()
         self.draw()
 
         self._restore_horizontal_center_fraction(
@@ -289,10 +478,15 @@ class ChromatogramCanvas(tk.Frame):
 
         old_y = self.canvas.yview()
 
-        self.scale_y = float(
-            value
+        self.scale_y = min(
+            self.Y_SCALE_MAX,
+            max(
+                self.Y_SCALE_MIN,
+                float(value)
+            )
         )
 
+        self._update_scale_scrollbars()
         self.draw()
 
         if old_y:
@@ -770,9 +964,7 @@ class ChromatogramCanvas(tk.Frame):
                 )
             )
 
-            self.x_scale_var.set(
-                self.scale_x
-            )
+            self._update_scale_scrollbars()
 
             self.draw()
 
