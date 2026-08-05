@@ -1,5 +1,6 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
+from pathlib import Path
 
 from core.blast_controller import (
     run_blast_folder
@@ -10,6 +11,9 @@ from core.sequence_loader import (
     load_ab1_file,
     load_ab1_folder
 )
+from core.sequence_dataset import SequenceDataset
+from core.sequence_dataset_adapter import from_trimmed_sequences
+from core.project import DerivationType, Project
 
 
 from gui.chromatogram_canvas import ChromatogramCanvas
@@ -20,6 +24,18 @@ from gui.alignment_window import AlignmentWindow
 from gui.button_bar import ButtonBar
 from gui.blast_dialog import BlastDialog
 from gui.alignment_sequence_window import AlignmentSequenceWindow
+from gui.consensus_viewer import SingleConsensusReviewWindow
+from gui.multiple_consensus_viewer import MultipleConsensusAlignmentWindow
+from gui.consensus_review_manager import (
+    ConsensusReviewCandidate,
+    ConsensusReviewManagerWindow,
+)
+from gui.consensus_review_entry import (
+    build_consensus_review_pair_rows,
+    build_consensus_review_manager_inputs,
+    build_review_view_model,
+    discover_clear_pairs,
+)
 
 class MainWindow:
 
@@ -68,7 +84,10 @@ class MainWindow:
                     self.open_blast_dialog,
 
                 "open_quality_panel":
-                    self.open_quality_panel
+                    self.open_quality_panel,
+
+                "open_consensus_review":
+                    self.open_consensus_review_manager
 
             }
 
@@ -125,6 +144,94 @@ class MainWindow:
             fill="x",
             side="bottom"
         )
+
+    def create_sequence_dataset(
+        self,
+        dataset_id: str,
+        name: str,
+        *,
+        reads=None,
+        creation_context: str = "current Main Viewer trimmed reads",
+    ) -> SequenceDataset:
+        """Create a new immutable dataset from already-trimmed viewer reads.
+
+        This is a data boundary only: it does not alter ``SangerRead`` values,
+        change viewer selection, add the dataset to a Project, or open another
+        GUI.  The default source is the currently selected read collection;
+        callers may explicitly provide an ordered collection for testing or a
+        future GUI action.
+        """
+
+        read_values = tuple(reads) if reads is not None else self._dataset_source_reads()
+        sequence_pairs = []
+        for read in read_values:
+            filename = getattr(read, "filename", None)
+            trimmed_sequence = getattr(read, "trimmed_sequence", None)
+            if not isinstance(filename, str) or not filename:
+                raise ValueError("Main Viewer read must have a non-empty filename")
+            if not isinstance(trimmed_sequence, str) or not trimmed_sequence:
+                raise ValueError(f"trimmed_sequence is empty for read: {filename}")
+            sequence_pairs.append((Path(filename).stem, trimmed_sequence))
+
+        return from_trimmed_sequences(
+            dataset_id=dataset_id,
+            name=name,
+            sequences=sequence_pairs,
+            metadata={
+                "source": "Main Viewer",
+                "read_count": len(read_values),
+                "creation_context": creation_context,
+            },
+        )
+
+    def _dataset_source_reads(self):
+        """Return the current viewer ordering without changing any GUI state."""
+
+        if hasattr(self, "selected_reads"):
+            return self.selected_reads
+        if hasattr(self, "reads"):
+            return self.reads
+        if hasattr(self, "current_read"):
+            return (self.current_read,)
+        raise ValueError("No reads are loaded in Main Viewer")
+
+    def add_trimmed_sequence_dataset_to_project(
+        self,
+        project: Project,
+        dataset_id: str,
+        name: str,
+        *,
+        reads=None,
+        display_name: str | None = None,
+        creation_context: str = "current Main Viewer trimmed reads",
+        on_project_changed=None,
+    ) -> Project:
+        """Create a trimmed dataset and return a new Project containing it.
+
+        The caller owns the returned immutable Project through the optional
+        callback.  Main Viewer deliberately does not store the Project, update
+        another GUI, or persist anything in this minimal connection.
+        """
+
+        if not isinstance(project, Project):
+            raise ValueError("project must be a Project")
+        if on_project_changed is not None and not callable(on_project_changed):
+            raise ValueError("on_project_changed must be callable or None")
+
+        dataset = self.create_sequence_dataset(
+            dataset_id,
+            name,
+            reads=reads,
+            creation_context=creation_context,
+        )
+        updated_project = project.add_dataset(
+            dataset,
+            display_name=display_name,
+            derivation_type=DerivationType.TRIMMED_FROM_READS,
+        )
+        if on_project_changed is not None:
+            on_project_changed(updated_project)
+        return updated_project
 
 
 
@@ -769,6 +876,218 @@ class MainWindow:
 
                 break
 
+    def open_single_consensus_review(
+        self,
+        view_model,
+    ):
+        """Open the review prototype with this window's trace-jump callback."""
+
+        return SingleConsensusReviewWindow(
+            self.root,
+            view_model,
+            on_trace_jump=self._jump_to_consensus_trace,
+        )
+
+    def open_consensus_review_manager(self):
+        """Open the existing review-manager workflow for loaded clear pairs.
+
+        Main Viewer only supplies its loaded reads and callback routes. Pair
+        detection and candidate/evidence preparation remain in
+        ``gui.consensus_review_entry``; MAFFT remains delegated by the manager
+        for Multiple mode.
+        """
+
+        reads = getattr(self, "reads", ())
+        if not reads:
+            messagebox.showinfo(
+                "Consensus Review",
+                "Load a folder containing Forward/Reverse AB1 reads first.",
+            )
+            return None
+
+        clear_pairs = discover_clear_pairs(reads)
+        if not clear_pairs:
+            messagebox.showinfo(
+                "Consensus Review",
+                "No clear _F/_R pairs were detected in the loaded AB1 reads.",
+            )
+            return None
+
+        try:
+            review_inputs = build_consensus_review_manager_inputs(clear_pairs)
+        except Exception as error:
+            messagebox.showerror(
+                "Consensus Review",
+                f"Could not build consensus review candidates: {error}",
+            )
+            return None
+
+        self.status_bar.set_text(
+            f"{len(review_inputs.candidates)} consensus candidate(s) ready for review"
+        )
+        return ConsensusReviewManagerWindow(
+            self.root,
+            review_inputs.candidates,
+            on_open_single=self._open_consensus_review_candidate,
+            on_open_multiple=lambda aligned_set: self._open_multiple_consensus_review(
+                aligned_set,
+                review_inputs.evidence_map,
+            ),
+        )
+
+    def _open_consensus_review_candidate(
+        self,
+        candidate: ConsensusReviewCandidate,
+    ):
+        """Route a manager Single selection into the existing single viewer."""
+
+        view_model = candidate.single_review_input
+        if view_model is None:
+            raise ValueError("selected candidate has no Single Consensus Review input")
+        return self.open_single_consensus_review(view_model)
+
+    def _open_multiple_consensus_review(self, aligned_consensus_set, evidence_map):
+        """Route manager-owned MAFFT output into the existing multiple viewer."""
+
+        return MultipleConsensusAlignmentWindow(
+            self.root,
+            aligned_consensus_set,
+            evidence_map=evidence_map,
+            on_trace_jump=self._jump_to_consensus_trace,
+        )
+
+    def open_consensus_review_selector(self):
+        """Backward-compatible alias for the manager-based review entry."""
+
+        return self.open_consensus_review_manager()
+
+    def _open_legacy_single_consensus_review_selector(self):
+        """Retained legacy direct-single selector; no longer exposed by the button."""
+
+        reads = getattr(self, "reads", ())
+        if not reads:
+            messagebox.showinfo(
+                "Consensus Review",
+                "Load a folder containing Forward/Reverse AB1 reads first.",
+            )
+            return
+
+        clear_pairs = discover_clear_pairs(reads)
+        if not clear_pairs:
+            messagebox.showinfo(
+                "Consensus Review",
+                "No clear _F/_R pairs were detected in the loaded AB1 reads.",
+            )
+            return
+
+        sample = self._choose_consensus_review_pair(clear_pairs)
+        if sample is None:
+            return
+
+        try:
+            view_model = build_review_view_model(sample)
+        except Exception as error:
+            messagebox.showerror(
+                "Consensus Review",
+                f"Could not build a consensus review for {sample.sample_id}: {error}",
+            )
+            return
+
+        self.open_single_consensus_review(view_model)
+
+    def _choose_consensus_review_pair(self, clear_pairs):
+        """Show a small modal selector for already classified clear pairs."""
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Select pair for Consensus Review")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("620x320")
+        dialog.minsize(520, 240)
+
+        tk.Label(
+            dialog,
+            text="Select one filename-derived Forward/Reverse pair:",
+            anchor="w",
+            padx=12,
+            pady=10,
+        ).pack(fill="x")
+        pair_rows = build_consensus_review_pair_rows(clear_pairs)
+        table_frame = tk.Frame(dialog)
+        table_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        pair_table = ttk.Treeview(
+            table_frame,
+            columns=("sample", "forward", "reverse", "forward_bp", "reverse_bp"),
+            show="headings",
+            selectmode="browse",
+        )
+        table_columns = (
+            ("sample", "Sample", 120, True),
+            ("forward", "Forward filename", 180, True),
+            ("reverse", "Reverse filename", 180, True),
+            ("forward_bp", "F input bp", 82, False),
+            ("reverse_bp", "R input bp", 82, False),
+        )
+        for column_id, heading, width, stretch in table_columns:
+            pair_table.heading(column_id, text=heading)
+            pair_table.column(column_id, width=width, stretch=stretch)
+        table_scrollbar = ttk.Scrollbar(
+            table_frame,
+            orient="vertical",
+            command=pair_table.yview,
+        )
+        pair_table.configure(yscrollcommand=table_scrollbar.set)
+        pair_table.pack(side="left", fill="both", expand=True)
+        table_scrollbar.pack(side="right", fill="y")
+        for index, row in enumerate(pair_rows):
+            pair_table.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(
+                    row.sample_id,
+                    row.forward_filename,
+                    row.reverse_filename,
+                    _display_pair_input_length(row.forward_input_length),
+                    _display_pair_input_length(row.reverse_input_length),
+                ),
+            )
+        pair_table.selection_set("0")
+        pair_table.focus("0")
+
+        result = {"sample": None}
+
+        def choose():
+            selected = pair_table.selection()
+            if selected:
+                result["sample"] = pair_rows[int(selected[0])].sample
+            dialog.destroy()
+
+        buttons = tk.Frame(dialog)
+        buttons.pack(fill="x", padx=12, pady=(0, 12))
+        tk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
+        tk.Button(buttons, text="Open review", command=choose).pack(
+            side="right",
+            padx=(0, 8),
+        )
+        pair_table.bind("<Double-Button-1>", lambda _event: choose())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        self.root.wait_window(dialog)
+        return result["sample"]
+
+    def _jump_to_consensus_trace(
+        self,
+        read_identifier,
+        raw_trace_position,
+    ):
+        """Delegate a bridge-provided raw trace coordinate to Main Viewer."""
+
+        self.alignment_clicked(
+            read_identifier,
+            raw_trace_position,
+            None,
+        )
+
     # ==================================================
     # MainViewer click callback
     # ==================================================
@@ -793,3 +1112,9 @@ class MainWindow:
                 trace_position
 
             )
+
+
+def _display_pair_input_length(length):
+    """Format an already available consensus-input length for the selector."""
+
+    return "—" if length is None else f"{length} bp"

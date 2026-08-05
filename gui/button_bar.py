@@ -48,6 +48,11 @@ class ButtonBar(tk.Frame):
             (
                 "Quality Report",
                 callbacks["open_quality_panel"]
+            ),
+
+            (
+                "Consensus Review",
+                callbacks["open_consensus_review"]
             )
 
         ]

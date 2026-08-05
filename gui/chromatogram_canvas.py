@@ -17,7 +17,7 @@ class ChromatogramCanvas(tk.Frame):
         # Base layout settings
         # =====================
 
-        self.base_row_height = 130
+        self.base_row_height = 100
         self.base_trace_height = 70
 
         self.trace_top = 55
@@ -45,6 +45,43 @@ class ChromatogramCanvas(tk.Frame):
             side="bottom",
             fill="x"
         )
+
+        # =====================
+        # Coordinate inspector
+        # =====================
+
+        self.inspector_frame = tk.LabelFrame(
+            self,
+            text="Selected Base"
+        )
+
+        self.inspector_frame.pack(
+            side="bottom",
+            fill="x",
+            padx=4,
+            pady=2
+        )
+
+        self.inspector_text = tk.StringVar()
+
+        self.inspector_label = tk.Label(
+            self.inspector_frame,
+            textvariable=self.inspector_text,
+            anchor="w",
+            justify="left",
+            font=(
+                "Courier",
+                9
+            )
+        )
+
+        self.inspector_label.pack(
+            fill="x",
+            padx=6,
+            pady=3
+        )
+
+        self._clear_inspector()
 
         # =====================
         # Main frame
@@ -214,6 +251,11 @@ class ChromatogramCanvas(tk.Frame):
         self._bind_scroll_events()
 
         self.canvas.bind(
+            "<Button-1>",
+            self._on_base_click
+        )
+
+        self.canvas.bind(
             "<ButtonPress-2>",
             self.pan_start
         )
@@ -252,9 +294,15 @@ class ChromatogramCanvas(tk.Frame):
 
         return max(
             self.base_row_height,
-            self.get_trace_height()
-            +
-            60
+            int(
+                self.trace_top
+                +
+                self.get_trace_height()
+                /
+                2
+                +
+                10
+            )
         )
 
     # ==================================================
@@ -596,7 +644,10 @@ class ChromatogramCanvas(tk.Frame):
 
         self.visible_reads = []
 
+        self._clear_inspector()
+
         self.draw()
+        self._reset_vertical_view()
 
     # ==================================================
     # Load multiple reads
@@ -609,7 +660,10 @@ class ChromatogramCanvas(tk.Frame):
 
         self.reads = reads
 
+        self._clear_inspector()
+
         self.draw()
+        self._reset_vertical_view()
 
     # ==================================================
     # Main draw
@@ -670,8 +724,20 @@ class ChromatogramCanvas(tk.Frame):
 
         if bbox:
 
+            # Restrict vertical scrolling to the rows actually being drawn.
+            # Canvas item bounds can include text or marker margins; they are
+            # useful horizontally but should not create extra blank read rows.
+            read_display_bottom = self._read_display_bottom(
+                len(reads)
+            )
+
             self.canvas.config(
-                scrollregion=bbox
+                scrollregion=(
+                    bbox[0],
+                    0,
+                    bbox[2],
+                    read_display_bottom
+                )
             )
 
             self.label_canvas.config(
@@ -679,11 +745,41 @@ class ChromatogramCanvas(tk.Frame):
                     0,
                     0,
                     110,
-                    bbox[3]
+                    read_display_bottom
                 )
             )
 
         self._draw_position_marker()
+
+    def _read_display_bottom(
+        self,
+        read_count
+    ):
+        """Return the lower edge of the last visible chromatogram row."""
+
+        if read_count <= 0:
+            return 0
+
+        return (
+            (read_count - 1)
+            *
+            self.get_row_height()
+            +
+            self.trace_top
+            +
+            self.get_trace_height()
+        )
+
+    def _reset_vertical_view(self):
+        """Start a changed read selection at its first displayed row."""
+
+        self.canvas.yview_moveto(
+            0
+        )
+
+        self.label_canvas.yview_moveto(
+            0
+        )
 
     # ==================================================
     # Single read
@@ -850,7 +946,143 @@ class ChromatogramCanvas(tk.Frame):
 
         self.visible_reads = reads
 
+        self._clear_inspector()
+
         self.draw()
+        self._reset_vertical_view()
+
+    # ==================================================
+    # Coordinate inspector
+    # ==================================================
+
+    def _clear_inspector(self):
+
+        self.inspector_text.set(
+            "Sample: —\n"
+            "Base: —   Quality: —   Region: —\n"
+            "Raw index (0-based): —   Trim index (0-based): —\n"
+            "Raw trace: —   Trim trace: —"
+        )
+
+    def _on_base_click(
+        self,
+        event
+    ):
+
+        if event.state & 0x0001:
+
+            return
+
+        canvas_x = self.canvas.canvasx(
+            event.x
+        )
+
+        canvas_y = self.canvas.canvasy(
+            event.y
+        )
+
+        if canvas_y < 0:
+
+            return
+
+        if self.visible_reads:
+
+            reads = self.visible_reads
+
+        else:
+
+            reads = self.reads
+
+        row_height = self.get_row_height()
+
+        row_index = int(
+            canvas_y
+            //
+            row_height
+        )
+
+        if (
+            row_index < 0
+            or
+            row_index >= len(reads)
+        ):
+
+            return
+
+        read = reads[row_index]
+        positions = read.base_positions
+
+        if not positions:
+
+            return
+
+        raw_index = min(
+            range(
+                len(positions)
+            ),
+            key=lambda index: abs(
+                positions[index]
+                *
+                self.scale_x
+                -
+                canvas_x
+            )
+        )
+
+        self._show_base_coordinates(
+            read,
+            raw_index
+        )
+
+    def _show_base_coordinates(
+        self,
+        read,
+        raw_index
+    ):
+
+        trim_start = read.trim_start
+        trim_end = read.trim_end
+
+        is_trimmed = (
+            trim_start
+            <=
+            raw_index
+            <
+            trim_end
+        )
+
+        if is_trimmed:
+
+            trimmed_index = (
+                raw_index
+                -
+                trim_start
+            )
+
+            trimmed_trace_position = (
+                read.trimmed_base_positions[
+                    trimmed_index
+                ]
+            )
+
+            region = "TRIMMED"
+
+        else:
+
+            trimmed_index = "—"
+            trimmed_trace_position = "—"
+            region = "OUTSIDE TRIM"
+
+        self.inspector_text.set(
+            f"Sample: {read.filename}\n"
+            f"Base: {read.sequence[raw_index]}   "
+            f"Quality: {read.quality[raw_index]}   "
+            f"Region: {region}\n"
+            f"Raw index (0-based): {raw_index}   "
+            f"Trim index (0-based): {trimmed_index}\n"
+            f"Raw trace: {read.base_positions[raw_index]}   "
+            f"Trim trace: {trimmed_trace_position}"
+        )
 
     # ==================================================
     # Mouse scroll / Zoom

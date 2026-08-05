@@ -1,50 +1,43 @@
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog
 
-from pathlib import Path
-
 from core.mafft import run_mafft
-
-from pathlib import Path
-
 from core.selection import (
     save_selection,
-    load_selection
+    load_selection,
 )
 
 
 class QualityPanel(tk.Toplevel):
 
-
     def __init__(
         self,
         parent,
-        reads
+        reads,
     ):
 
         super().__init__(parent)
-
 
         self.title(
             "Sequence Quality"
         )
 
-
         self.geometry(
-            "700x500"
+            "900x600"
         )
 
+        self.minsize(
+            760,
+            420,
+        )
 
         self.reads = reads
 
-
-        # checkbox管理
-
+        # Checkbox management
         self.check_vars = []
 
         self.apply_callback = None
-
-
 
         # =====================
         # Header
@@ -53,45 +46,113 @@ class QualityPanel(tk.Toplevel):
         header = tk.Label(
             self,
             text=(
-                "Select     Sample              "
+                "Select     Sample                    "
                 "Length     HQ%      Q20      Q30"
             ),
             font=(
                 "Courier",
                 10,
-                "bold"
-            )
+                "bold",
+            ),
+            anchor="w",
         )
 
         header.pack(
-            anchor="w",
+            fill="x",
             padx=10,
-            pady=5
+            pady=(
+                8,
+                4,
+            ),
         )
 
-
-
         # =====================
-        # Scroll frame
+        # Scrollable sample area
         # =====================
 
-        self.list_frame = tk.Frame(
+        self.scroll_container = tk.Frame(
             self
         )
 
-        self.list_frame.pack(
+        self.scroll_container.pack(
             fill="both",
-            expand=True
+            expand=True,
+            padx=8,
+            pady=0,
         )
 
+        self.list_canvas = tk.Canvas(
+            self.scroll_container,
+            highlightthickness=0,
+            borderwidth=0,
+        )
 
+        self.vertical_scrollbar = tk.Scrollbar(
+            self.scroll_container,
+            orient="vertical",
+            command=self.list_canvas.yview,
+        )
+
+        self.list_canvas.configure(
+            yscrollcommand=self.vertical_scrollbar.set
+        )
+
+        self.vertical_scrollbar.pack(
+            side="right",
+            fill="y",
+        )
+
+        self.list_canvas.pack(
+            side="left",
+            fill="both",
+            expand=True,
+        )
+
+        # Frame inside the Canvas
+        self.list_frame = tk.Frame(
+            self.list_canvas
+        )
+
+        self.list_window = self.list_canvas.create_window(
+            (
+                0,
+                0,
+            ),
+            window=self.list_frame,
+            anchor="nw",
+        )
+
+        # Update scroll region when rows are added
+        self.list_frame.bind(
+            "<Configure>",
+            self._update_scroll_region,
+        )
+
+        # Keep inner frame width synchronized with Canvas
+        self.list_canvas.bind(
+            "<Configure>",
+            self._resize_list_frame,
+        )
+
+        # Mouse wheel / Mac trackpad
+        self.list_canvas.bind(
+            "<Enter>",
+            self._bind_mousewheel,
+        )
+
+        self.list_canvas.bind(
+            "<Leave>",
+            self._unbind_mousewheel,
+        )
+
+        # =====================
+        # Create sample rows
+        # =====================
 
         self.create_rows()
 
-
-
         # =====================
-        # HQ Select area
+        # Fixed bottom controls
         # =====================
 
         bottom = tk.Frame(
@@ -100,141 +161,232 @@ class QualityPanel(tk.Toplevel):
 
         bottom.pack(
             fill="x",
-            pady=10
+            padx=8,
+            pady=(
+                6,
+                10,
+            ),
         )
 
+        # ---------------------
+        # HQ threshold row
+        # ---------------------
 
+        threshold_row = tk.Frame(
+            bottom
+        )
+
+        threshold_row.pack(
+            fill="x",
+            pady=(
+                0,
+                6,
+            ),
+        )
 
         tk.Label(
-            bottom,
-            text="HQ threshold (%)"
+            threshold_row,
+            text="HQ threshold (%)",
         ).pack(
             side="left",
-            padx=5
+            padx=(
+                0,
+                5,
+            ),
         )
 
-
-
         self.hq_entry = tk.Entry(
-            bottom,
-            width=8
+            threshold_row,
+            width=8,
         )
 
         self.hq_entry.insert(
             0,
-            "70"
+            "70",
         )
 
         self.hq_entry.pack(
             side="left"
         )
 
-
-
         self.select_button = tk.Button(
-
-            bottom,
-
+            threshold_row,
             text="HQ > threshold Select",
-
-            command=self.select_by_hq
-
+            command=self.select_by_hq,
         )
 
-
         self.select_button.pack(
-
             side="left",
+            padx=10,
+        )
 
-            padx=10
+        # ---------------------
+        # First action row
+        # ---------------------
 
+        action_row_1 = tk.Frame(
+            bottom
+        )
+
+        action_row_1.pack(
+            fill="x",
+            pady=(
+                0,
+                5,
+            ),
         )
 
         self.apply_button = tk.Button(
-
-            bottom,
-
+            action_row_1,
             text="Apply to Viewer",
-
-            command=self.apply_to_viewer
-
+            command=self.apply_to_viewer,
         )
 
-
         self.apply_button.pack(
-
             side="left",
-
-            padx=10
-
+            padx=(
+                0,
+                6,
+            ),
         )
 
         self.export_button = tk.Button(
-            bottom,
+            action_row_1,
             text="Export Selected FASTA",
-            command=self.export_fasta
+            command=self.export_fasta,
         )
 
         self.export_button.pack(
             side="left",
-            padx=10
+            padx=6,
         )
 
         self.align_button = tk.Button(
-            bottom,
+            action_row_1,
             text="Align Selected",
-            command=self.align_selected
+            command=self.align_selected,
         )
-
 
         self.align_button.pack(
             side="left",
-            padx=10
+            padx=6,
+        )
+
+        # ---------------------
+        # Second action row
+        # ---------------------
+
+        action_row_2 = tk.Frame(
+            bottom
+        )
+
+        action_row_2.pack(
+            fill="x"
         )
 
         self.save_button = tk.Button(
-            bottom,
+            action_row_2,
             text="Save Selection",
-            command=self.save_selection_file
+            command=self.save_selection_file,
         )
 
         self.save_button.pack(
             side="left",
-            padx=10
+            padx=(
+                0,
+                6,
+            ),
         )
 
-
         self.load_button = tk.Button(
-            bottom,
+            action_row_2,
             text="Load Selection",
-            command=self.load_selection_file
+            command=self.load_selection_file,
         )
 
         self.load_button.pack(
             side="left",
-            padx=10
+            padx=6,
         )
 
-        self.apply_button = tk.Button(
+    # ==================================================
+    # Scroll handling
+    # ==================================================
 
-            bottom,
+    def _update_scroll_region(
+        self,
+        _event=None,
+    ):
 
-            text="Apply to Viewer",
-
-            command=self.apply_selection
-
+        bbox = self.list_canvas.bbox(
+            "all"
         )
 
+        if bbox:
 
-        self.apply_button.pack(
+            self.list_canvas.configure(
+                scrollregion=bbox
+            )
 
-            side="left",
+    def _resize_list_frame(
+        self,
+        event,
+    ):
 
-            padx=10
-
+        self.list_canvas.itemconfigure(
+            self.list_window,
+            width=event.width,
         )
 
-        self.apply_callback = None
+    def _bind_mousewheel(
+        self,
+        _event=None,
+    ):
+
+        self.list_canvas.bind_all(
+            "<MouseWheel>",
+            self._on_mousewheel,
+        )
+
+    def _unbind_mousewheel(
+        self,
+        _event=None,
+    ):
+
+        self.list_canvas.unbind_all(
+            "<MouseWheel>"
+        )
+
+    def _on_mousewheel(
+        self,
+        event,
+    ):
+
+        if event.delta == 0:
+
+            return
+
+        # macOS trackpad often reports small delta values
+        if abs(event.delta) < 120:
+
+            units = (
+                -1
+                if event.delta > 0
+                else 1
+            )
+
+        else:
+
+            units = int(
+                -event.delta
+                /
+                120
+            )
+
+        self.list_canvas.yview_scroll(
+            units,
+            "units",
+        )
 
     # ==================================================
     # Register apply callback
@@ -242,7 +394,7 @@ class QualityPanel(tk.Toplevel):
 
     def set_apply_callback(
         self,
-        callback
+        callback,
     ):
 
         self.apply_callback = callback
@@ -251,164 +403,117 @@ class QualityPanel(tk.Toplevel):
     # Create rows
     # ==================================================
 
-    def create_rows(self):
-
+    def create_rows(
+        self
+    ):
 
         for read in self.reads:
 
-
             var = tk.BooleanVar(
-
                 value=getattr(
                     read,
                     "selected",
-                    True
-                    )
-
+                    True,
+                )
             )
-
 
             self.check_vars.append(
-
                 (
                     read,
-                    var
+                    var,
                 )
-
             )
 
-
-
             row = tk.Frame(
-
                 self.list_frame
-
             )
 
             row.pack(
-
                 fill="x",
-
                 padx=10,
-
-                pady=2
-
+                pady=2,
             )
-
-
 
             tk.Checkbutton(
-
                 row,
-
-                variable=var
-
+                variable=var,
             ).pack(
-
                 side="left"
-
             )
-
-
 
             text = (
-
-                f"{read.filename:<25}"
-
+                f"{read.filename:<28}"
                 f"{len(read.sequence):<10}"
-
                 f"{read.hq_percent:>6.1f}%   "
-
                 f"{read.q20_rate:>6.1f}%   "
-
                 f"{read.q30_rate:>6.1f}%"
-
             )
-
-
 
             tk.Label(
-
                 row,
-
                 text=text,
-
                 font=(
-
                     "Courier",
-
-                    10
-
-                )
-
+                    10,
+                ),
+                anchor="w",
             ).pack(
-
                 side="left"
-
             )
-
-
-
-
 
     # ==================================================
     # HQ selection
     # ==================================================
 
-    def select_by_hq(self):
-
+    def select_by_hq(
+        self
+    ):
 
         try:
 
             threshold = float(
-
                 self.hq_entry.get()
-
             )
 
-        except:
+        except ValueError:
 
+            print(
+                "HQ threshold must be a number."
+            )
 
             return
 
-
-
-
         for read, var in self.check_vars:
-
 
             if read.hq_percent >= threshold:
 
-                var.set(True)
-
+                var.set(
+                    True
+                )
 
             else:
 
-                var.set(False)
-
-
+                var.set(
+                    False
+                )
 
     # ==================================================
     # Get selected reads
     # ==================================================
 
-    def get_selected_reads(self):
-
+    def get_selected_reads(
+        self
+    ):
 
         selected = []
 
-
         for read, var in self.check_vars:
-
 
             if var.get():
 
                 selected.append(
-
                     read
-
                 )
-
 
         return selected
 
@@ -416,11 +521,11 @@ class QualityPanel(tk.Toplevel):
     # Export FASTA
     # ==================================================
 
-    def export_fasta(self):
-
+    def export_fasta(
+        self
+    ):
 
         selected = self.get_selected_reads()
-
 
         if len(selected) == 0:
 
@@ -430,51 +535,39 @@ class QualityPanel(tk.Toplevel):
 
             return
 
-
-
         filepath = filedialog.asksaveasfilename(
-
             defaultextension=".fas",
-
             filetypes=[
-
                 (
                     "FASTA files",
-                    "*.fas"
-                    ),
-
+                    "*.fas",
+                ),
                 (
                     "FASTA files",
-                    "*.fasta"
-                    )
-                ]
-            )
-        
+                    "*.fasta",
+                ),
+            ],
+        )
 
         if not filepath:
 
             return
 
-
-
         with open(
             filepath,
-            "w"
-        ) as f:
-
+            "w",
+            encoding="utf-8",
+        ) as fasta_file:
 
             for read in selected:
 
-
-                f.write(
+                fasta_file.write(
                     f">{read.filename}\n"
                 )
 
-
-                f.write(
+                fasta_file.write(
                     f"{read.trimmed_sequence}\n"
                 )
-
 
         print(
             f"Exported {len(selected)} sequences."
@@ -484,121 +577,90 @@ class QualityPanel(tk.Toplevel):
     # Save Selection
     # ==================================================
 
-    def save_selection_file(self):
-
+    def save_selection_file(
+        self
+    ):
 
         filepath = filedialog.asksaveasfilename(
-
             defaultextension=".json",
-
             filetypes=[
-
                 (
                     "JSON files",
-                    "*.json"
-                )
-
-            ]
-
+                    "*.json",
+                ),
+            ],
         )
-
 
         if not filepath:
 
             return
 
-
-
-        # GUI状態をreadへ反映
-
+        # Reflect GUI state in each read
         for read, var in self.check_vars:
 
             read.selected = var.get()
 
-
-
         save_selection(
-
             self.reads,
-
-            filepath
-
+            filepath,
         )
-
 
         print(
             "Selection saved:",
-            filepath
+            filepath,
         )
-
-
 
     # ==================================================
     # Load Selection
     # ==================================================
 
-    def load_selection_file(self):
-
+    def load_selection_file(
+        self
+    ):
 
         filepath = filedialog.askopenfilename(
-
             filetypes=[
-
                 (
                     "JSON files",
-                    "*.json"
-                )
-
-            ]
-
+                    "*.json",
+                ),
+            ],
         )
-
 
         if not filepath:
 
             return
 
-
-
         load_selection(
-
             self.reads,
-
-            filepath
-
+            filepath,
         )
 
-
-
-        # GUIへ反映
-
+        # Reflect loaded state in GUI
         for read, var in self.check_vars:
 
             var.set(
-
                 getattr(
                     read,
                     "selected",
-                    True
+                    True,
                 )
-
             )
-
 
         print(
             "Selection loaded:",
-            filepath
+            filepath,
         )
 
     # ==================================================
     # MAFFT Alignment
     # ==================================================
 
-    def align_selected(self):
-
+    def align_selected(
+        self
+    ):
 
         selected = self.get_selected_reads()
-
 
         if len(selected) == 0:
 
@@ -608,77 +670,47 @@ class QualityPanel(tk.Toplevel):
 
             return
 
-
-
         temp_fasta = Path(
             "selected_sequences.fas"
         )
 
-
         output_fasta = filedialog.asksaveasfilename(
-
             title="Save aligned FASTA",
-
             defaultextension=".fas",
-
             filetypes=[
-
                 (
                     "FASTA files",
-                    "*.fas"
-                )
-
-            ]
-
+                    "*.fas",
+                ),
+            ],
         )
-
 
         if not output_fasta:
 
             return
 
-
-
-        # =====================
-        # Create temporary FASTA
-        # =====================
-
         with open(
             temp_fasta,
-            "w"
-        ) as f:
-
+            "w",
+            encoding="utf-8",
+        ) as fasta_file:
 
             for read in selected:
 
-
-                f.write(
+                fasta_file.write(
                     f">{read.filename}\n"
                 )
 
-
-                f.write(
+                fasta_file.write(
                     f"{read.trimmed_sequence}\n"
                 )
 
-
-
-        # =====================
-        # Run MAFFT
-        # =====================
-
         success = run_mafft(
-
             temp_fasta,
-
-            output_fasta
-
+            output_fasta,
         )
 
-
-
         if success:
-
 
             print(
                 "MAFFT alignment completed."
@@ -687,15 +719,11 @@ class QualityPanel(tk.Toplevel):
             from gui.alignment_window import AlignmentWindow
 
             AlignmentWindow(
-
                 self,
-
-                output_fasta
+                output_fasta,
             )
 
-
         else:
-
 
             print(
                 "MAFFT failed."
@@ -711,53 +739,12 @@ class QualityPanel(tk.Toplevel):
 
         selected = self.get_selected_reads()
 
-
         if self.apply_callback is not None:
 
             self.apply_callback(
-
                 selected
-
             )
-
 
         print(
             f"Applied {len(selected)} reads to viewer."
-        )
-
-    # ==================================================
-    # Register Apply callback
-    # ==================================================
-
-    def set_apply_callback(
-
-        self,
-
-        callback
-
-    ):
-
-        self.apply_callback = callback
-
-    # ==================================================
-    # Apply selection to Main Viewer
-    # ==================================================
-
-    def apply_selection(self):
-
-
-        selected = self.get_selected_reads()
-
-
-
-        if self.apply_callback is None:
-
-            return
-
-
-
-        self.apply_callback(
-
-            selected
-
         )

@@ -79,6 +79,9 @@ class ChromatogramRead:
         # Raw bases
         self.draw_sequence()
 
+        # Trimmed sequence positions
+        self.draw_position_ticks()
+
 
 
     # ==================================================
@@ -427,6 +430,85 @@ class ChromatogramRead:
 
                 )
 
+            )
+
+    # ==================================================
+    # Trimmed sequence position ticks
+    # ==================================================
+
+    def draw_position_ticks(self):
+
+        positions = self.read.base_positions
+
+        trim_start = getattr(
+            self.read,
+            "trim_start",
+            0
+        )
+
+        trim_end = getattr(
+            self.read,
+            "trim_end",
+            len(positions)
+        )
+
+        trim_start = max(
+            0,
+            trim_start
+        )
+
+        trim_end = min(
+            len(positions),
+            trim_end
+        )
+
+        for trimmed_position, raw_index in enumerate(
+            range(
+                trim_start,
+                trim_end
+            ),
+            start=1
+        ):
+
+            if (
+                trimmed_position != 1
+                and
+                trimmed_position % 10 != 0
+            ):
+
+                continue
+
+            x = (
+                positions[raw_index]
+                *
+                self.scale_x
+            )
+
+            tick_y = (
+                self.ruler_y
+                +
+                self.y_offset
+            )
+
+            self.canvas.create_text(
+                x,
+                tick_y,
+                text=str(trimmed_position),
+                anchor="n",
+                fill="#555555",
+                font=(
+                    "Courier",
+                    7
+                )
+            )
+
+            self.canvas.create_line(
+                x,
+                tick_y + 10,
+                x,
+                tick_y + 13,
+                fill="#777777",
+                width=1
             )
 
     # ==================================================
