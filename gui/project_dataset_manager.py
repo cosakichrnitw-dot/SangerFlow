@@ -15,12 +15,17 @@ from core.project import Project
 from core.analysis_result import AnalysisResultType
 from core.sequence_dataset import SequenceDataset, SourceType
 from core.dataset_open_router import DatasetOpenRouteError, DatasetOpenRouter
-from core.blast_result import BlastResultDataset
 from gui.blast_workflow_actions import (
     BlastWorkflowActionError,
     BlastResultResolver,
     OpenBlastResultCallback,
     open_project_blast_result,
+)
+from gui.bold_workflow_actions import (
+    BoldWorkflowActionError,
+    BoldResultResolver,
+    OpenBoldResultCallback,
+    open_project_bold_result,
 )
 from gui.fasta_import_dialog import FastaImportDialog
 
@@ -73,15 +78,13 @@ class ProjectDatasetManagerState:
     def table_rows(self) -> tuple[DatasetTableRow, ...]:
         return tuple(
             DatasetTableRow(
-                selected=entry.dataset.dataset_id in self._selected_dataset_ids,
+                selected=_dataset_id(entry.dataset) in self._selected_dataset_ids,
                 dataset_name=entry.display_name,
-                dataset_id=entry.dataset.dataset_id,
-                source_type=entry.dataset.source_type.value,
+                dataset_id=_dataset_id(entry.dataset),
+                source_type=_dataset_type(entry.dataset),
                 sequence_count=entry.dataset.sequence_count,
-                length_range=(
-                    f"{entry.dataset.minimum_length}\N{EN DASH}{entry.dataset.maximum_length}"
-                ),
-                has_gaps="Yes" if entry.dataset.has_gaps else "No",
+                length_range=_length_range(entry.dataset),
+                has_gaps="Yes" if _has_gaps(entry.dataset) else "No",
                 parent_dataset_id=entry.parent_dataset_id or "-",
                 derivation_type=(entry.derivation_type.value if entry.derivation_type else "-"),
             )
@@ -119,7 +122,7 @@ class ProjectDatasetManagerState:
         return tuple(
             entry.dataset
             for entry in self.project.dataset_entries
-            if entry.dataset.dataset_id in self._selected_dataset_ids
+            if _dataset_id(entry.dataset) in self._selected_dataset_ids
         )
 
     def open_selected(
@@ -192,6 +195,8 @@ class ProjectDatasetManagerState:
         if len(selected) != 1:
             raise DatasetSelectionError("MAFFT alignment requires exactly one selected dataset")
         dataset = selected[0]
+        if not isinstance(dataset, SequenceDataset):
+            raise DatasetSelectionError("only unaligned SequenceDataset values can be aligned here")
         if dataset.source_type is SourceType.IMPORTED_ALIGNMENT:
             raise DatasetSelectionError("an existing alignment dataset cannot be aligned again here")
         if dataset.has_gaps:
@@ -265,6 +270,8 @@ class ProjectDatasetManagerWindow(tk.Toplevel):
         on_run_blast: Optional[RunBlastCallback] = None,
         resolve_blast_result: Optional[BlastResultResolver] = None,
         on_open_blast_result: Optional[OpenBlastResultCallback] = None,
+        resolve_bold_result: Optional[BoldResultResolver] = None,
+        on_open_bold_result: Optional[OpenBoldResultCallback] = None,
         on_project_changed: Optional[ProjectChangedCallback] = None,
     ) -> None:
         if on_open_dataset is not None and not callable(on_open_dataset):
@@ -281,6 +288,10 @@ class ProjectDatasetManagerWindow(tk.Toplevel):
             raise ValueError("resolve_blast_result must be callable or None")
         if on_open_blast_result is not None and not callable(on_open_blast_result):
             raise ValueError("on_open_blast_result must be callable or None")
+        if resolve_bold_result is not None and not callable(resolve_bold_result):
+            raise ValueError("resolve_bold_result must be callable or None")
+        if on_open_bold_result is not None and not callable(on_open_bold_result):
+            raise ValueError("on_open_bold_result must be callable or None")
         if on_project_changed is not None and not callable(on_project_changed):
             raise ValueError("on_project_changed must be callable or None")
 
@@ -293,6 +304,8 @@ class ProjectDatasetManagerWindow(tk.Toplevel):
         self.on_run_blast = on_run_blast
         self.resolve_blast_result = resolve_blast_result
         self.on_open_blast_result = on_open_blast_result
+        self.resolve_bold_result = resolve_bold_result
+        self.on_open_bold_result = on_open_bold_result
         self.on_project_changed = on_project_changed
         self._message_var = tk.StringVar(value="Select one or more datasets.")
         self._item_dataset_ids: dict[str, str] = {}
@@ -359,12 +372,12 @@ class ProjectDatasetManagerWindow(tk.Toplevel):
             self.analysis_table.heading(column, text=heading)
             self.analysis_table.column(column, anchor="w", width=width, stretch=True)
         self.analysis_table.grid(row=0, column=0, sticky="ew")
-        self._open_blast_button = ttk.Button(
+        self._open_result_button = ttk.Button(
             analysis_frame,
             text="Open Result",
-            command=self._open_blast_result,
+            command=self._open_analysis_result,
         )
-        self._open_blast_button.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+        self._open_result_button.grid(row=0, column=1, sticky="ns", padx=(8, 0))
 
         footer = ttk.Frame(self, padding=(10, 0, 10, 10))
         footer.pack(fill="x")
@@ -435,8 +448,9 @@ class ProjectDatasetManagerWindow(tk.Toplevel):
                 values=(row.display_name, row.result_type, row.parent_dataset_id),
             )
             self._item_analysis_result_ids[item_id] = row.result_id
-        can_open = bool(self.resolve_blast_result and self.on_open_blast_result)
-        self._open_blast_button.configure(state="normal" if can_open else "disabled")
+        can_open_blast = bool(self.resolve_blast_result and self.on_open_blast_result)
+        can_open_bold = bool(self.resolve_bold_result and self.on_open_bold_result)
+        self._open_result_button.configure(state="normal" if can_open_blast or can_open_bold else "disabled")
 
     def _toggle_selection_from_click(self, event: tk.Event) -> None:
         item_id = self.table.identify_row(event.y)
@@ -516,17 +530,55 @@ class ProjectDatasetManagerWindow(tk.Toplevel):
         self.refresh_table()
         self._message_var.set("BLAST result added to this in-memory project.")
 
-    def _open_blast_result(self) -> None:
+    def _open_analysis_result(self) -> None:
         try:
             selection = self.analysis_table.selection()
             if not selection:
-                raise BlastWorkflowActionError("select a BLAST analysis result before opening")
+                raise BlastWorkflowActionError("select an analysis result before opening")
             result_id = self._item_analysis_result_ids[selection[0]]
-            open_project_blast_result(
-                self.project,
-                result_id,
-                resolve_blast_result=self.resolve_blast_result,  # type: ignore[arg-type]
-                on_open_blast_result=self.on_open_blast_result,  # type: ignore[arg-type]
-            )
-        except BlastWorkflowActionError as error:
+            result = self.project.get_analysis_result(result_id)
+            if result.result_type is AnalysisResultType.BLAST:
+                open_project_blast_result(
+                    self.project,
+                    result_id,
+                    resolve_blast_result=self.resolve_blast_result,  # type: ignore[arg-type]
+                    on_open_blast_result=self.on_open_blast_result,  # type: ignore[arg-type]
+                )
+            elif result.result_type is AnalysisResultType.BOLD:
+                open_project_bold_result(
+                    self.project,
+                    result_id,
+                    resolve_bold_result=self.resolve_bold_result,  # type: ignore[arg-type]
+                    on_open_bold_result=self.on_open_bold_result,  # type: ignore[arg-type]
+                )
+            else:
+                raise BlastWorkflowActionError(f"unsupported analysis result type: {result.result_type.value}")
+        except (BlastWorkflowActionError, BoldWorkflowActionError) as error:
             self._message_var.set(str(error))
+
+
+def _dataset_id(dataset: object) -> str:
+    return str(getattr(dataset, "dataset_id", None) or getattr(dataset, "alignment_id", "-"))
+
+
+def _dataset_type(dataset: object) -> str:
+    source_type = getattr(dataset, "source_type", None)
+    if source_type is not None:
+        return getattr(source_type, "value", str(source_type))
+    if hasattr(dataset, "alignment_id"):
+        return "AlignmentDataset"
+    return type(dataset).__name__
+
+
+def _length_range(dataset: object) -> str:
+    if hasattr(dataset, "minimum_length") and hasattr(dataset, "maximum_length"):
+        return f"{dataset.minimum_length}\N{EN DASH}{dataset.maximum_length}"
+    if hasattr(dataset, "length"):
+        return f"{dataset.length}\N{EN DASH}{dataset.length}"
+    return "-"
+
+
+def _has_gaps(dataset: object) -> bool:
+    if hasattr(dataset, "has_gaps"):
+        return bool(dataset.has_gaps)
+    return any("-" in getattr(record, "aligned_sequence", "") for record in getattr(dataset, "records", ()))

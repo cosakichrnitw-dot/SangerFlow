@@ -11,6 +11,8 @@ from workflow.mafft_workflow import align_sequence_dataset
 from workflow.project_alignment import add_alignment_to_project
 from workflow.project_blast import add_blast_result_to_project
 from core.blast_result import BlastHit, BlastResultDataset
+from workflow.project_bold import add_bold_result_to_project
+from core.bold_result import BoldHit, BoldResultDataset
 from types import SimpleNamespace
 from unittest.mock import patch
 from gui.project_dataset_manager import (
@@ -102,6 +104,23 @@ class ProjectDatasetManagerStateTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].display_name, "Input BLAST")
         self.assertEqual(rows[0].result_type, "BLAST")
+        self.assertEqual(rows[0].parent_dataset_id, "input")
+
+    def test_analysis_result_rows_also_show_bold_results(self) -> None:
+        dataset = make_dataset("input", sequences=(("IK345", "ATGC"),))
+        bold_result = BoldResultDataset(
+            "input-bold", "Input BOLD", "input", "COI", "BOLD",
+            (BoldHit("IK345", process_id="BOLD:AAA", similarity=99.0, database="BOLD"),),
+        )
+        project = add_bold_result_to_project(
+            Project.create("project", "Project").add_dataset(dataset), bold_result
+        )
+
+        rows = ProjectDatasetManagerState(project).analysis_result_rows()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].display_name, "Input BOLD")
+        self.assertEqual(rows[0].result_type, "BOLD")
         self.assertEqual(rows[0].parent_dataset_id, "input")
 
     def test_select_all_deselect_all_and_selection_order(self) -> None:

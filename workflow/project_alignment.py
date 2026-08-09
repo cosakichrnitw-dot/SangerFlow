@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from core.alignment_dataset import AlignmentDataset
 from core.project import DerivationType, Project
 from core.sequence_dataset import SequenceDataset, SourceType
 
 
 def add_alignment_to_project(
     project: Project,
-    alignment_dataset: SequenceDataset,
+    alignment_dataset: SequenceDataset | AlignmentDataset,
     *,
     parent_dataset_id: str | None = None,
     display_name: str | None = None,
@@ -25,21 +26,37 @@ def add_alignment_to_project(
 
     if not isinstance(project, Project):
         raise ValueError("project must be a Project")
-    if not isinstance(alignment_dataset, SequenceDataset):
-        raise ValueError("alignment_dataset must be a SequenceDataset")
-    if alignment_dataset.source_type is not SourceType.IMPORTED_ALIGNMENT:
-        raise ValueError("alignment_dataset must have SourceType.IMPORTED_ALIGNMENT")
-    if not alignment_dataset.is_equal_length:
-        raise ValueError("alignment_dataset must contain equal-length alignment rows")
-    if alignment_dataset.metadata.get("derivation_type") != "ALIGNED_WITH_MAFFT":
-        raise ValueError("alignment_dataset must be a MAFFT workflow result")
+    if isinstance(alignment_dataset, AlignmentDataset):
+        dataset_id = alignment_dataset.alignment_id
+        entry_derivation_type = DerivationType.ALIGNMENT_FROM_DATASET
+        if alignment_dataset.metadata.get("derivation_type") not in {
+            "ALIGNED_WITH_MAFFT",
+            DerivationType.ALIGNED_WITH_MAFFT.value,
+            DerivationType.ALIGNMENT_FROM_DATASET.value,
+        }:
+            raise ValueError("alignment_dataset must be a MAFFT workflow result")
+    elif isinstance(alignment_dataset, SequenceDataset):
+        dataset_id = alignment_dataset.dataset_id
+        entry_derivation_type = DerivationType.ALIGNED_WITH_MAFFT
+        if alignment_dataset.source_type is not SourceType.IMPORTED_ALIGNMENT:
+            raise ValueError("alignment_dataset must have SourceType.IMPORTED_ALIGNMENT")
+        if not alignment_dataset.is_equal_length:
+            raise ValueError("alignment_dataset must contain equal-length alignment rows")
+        if alignment_dataset.metadata.get("derivation_type") != "ALIGNED_WITH_MAFFT":
+            raise ValueError("alignment_dataset must be a MAFFT workflow result")
+    else:
+        raise ValueError("alignment_dataset must be a SequenceDataset or AlignmentDataset")
 
     resolved_parent_id = parent_dataset_id
     if resolved_parent_id is None:
         metadata_parent = alignment_dataset.metadata.get("parent_dataset_id")
         resolved_parent_id = metadata_parent if isinstance(metadata_parent, str) else None
+    if resolved_parent_id is None and isinstance(alignment_dataset, AlignmentDataset):
+        resolved_parent_id = alignment_dataset.parent_dataset_id
     if not resolved_parent_id:
         raise ValueError("parent_dataset_id is required for a MAFFT alignment dataset")
+    if resolved_parent_id == dataset_id:
+        raise ValueError("alignment_dataset cannot be its own parent")
 
     entry_metadata = dict(metadata or {})
     entry_metadata["added_to_project"] = True
@@ -47,6 +64,6 @@ def add_alignment_to_project(
         alignment_dataset,
         display_name=display_name,
         parent_dataset_id=resolved_parent_id,
-        derivation_type=DerivationType.ALIGNED_WITH_MAFFT,
+        derivation_type=entry_derivation_type,
         metadata=entry_metadata,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from core.analysis_result import AnalysisResult, AnalysisResultType
+from core.alignment_dataset import AlignmentDataset, AlignmentRecord
 from core.project import DerivationType, Project, ProjectAnalysisEntry, ProjectDatasetEntry
 from core.sequence_dataset import SequenceDataset, SourceType
 
@@ -30,6 +31,20 @@ class ProjectTests(unittest.TestCase):
             result_type=result_type,
             parent_dataset_id=parent_dataset_id,
             metadata={"producer": "test"},
+        )
+
+    def alignment_dataset(self, alignment_id: str, parent_dataset_id: str) -> AlignmentDataset:
+        return AlignmentDataset(
+            alignment_id=alignment_id,
+            name=alignment_id.title(),
+            parent_dataset_id=parent_dataset_id,
+            records=(
+                AlignmentRecord(
+                    record_id=f"{parent_dataset_id}-record",
+                    source_record_id=f"{parent_dataset_id}-record",
+                    aligned_sequence="ATG-C",
+                ),
+            ),
         )
 
     def test_create_allows_an_empty_project_and_freezes_metadata(self) -> None:
@@ -71,6 +86,25 @@ class ProjectTests(unittest.TestCase):
             project.get_dataset("missing")
         with self.assertRaisesRegex(ValueError, "already exists"):
             project.add_dataset(imported)
+
+    def test_add_alignment_dataset_as_project_dataset(self) -> None:
+        imported = self.dataset("imported")
+        alignment = self.alignment_dataset("alignment", "imported")
+        project = (
+            Project.create("project", "Project")
+            .add_dataset(imported)
+            .add_dataset(
+                alignment,
+                parent_dataset_id="imported",
+                derivation_type=DerivationType.ALIGNMENT_FROM_DATASET,
+            )
+        )
+
+        self.assertEqual(project.dataset_ids, ("imported", "alignment"))
+        self.assertIs(project.get_dataset("alignment"), alignment)
+        self.assertEqual(project.lineage("alignment"), ("imported", "alignment"))
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            project.add_dataset(alignment)
 
     def test_rename_returns_new_project_without_changing_dataset(self) -> None:
         imported = self.dataset("imported", "Original dataset name")

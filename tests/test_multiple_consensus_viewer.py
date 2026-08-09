@@ -1,7 +1,8 @@
-from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from pathlib import Path
 import unittest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from core.consensus_alignment import (
     AlignedConsensusSequence,
@@ -9,7 +10,7 @@ from core.consensus_alignment import (
     build_consensus_position_mapping,
 )
 from core.consensus_review_session import ConsensusReviewSession
-from core.human_review import DecisionType
+from core.human_review import DecisionType, HumanReviewDecision
 from gui.multiple_consensus_viewer import (
     MultipleConsensusAlignmentWindow,
     _EDITED_CELL_BACKGROUND,
@@ -79,6 +80,35 @@ def make_internal_and_terminal_gap_set():
 
 
 class MultipleConsensusViewerAdapterTests(unittest.TestCase):
+    def test_register_reviewed_consensus_callback_receives_derived_value(self):
+        window = object.__new__(MultipleConsensusAlignmentWindow)
+        received = []
+        row = SimpleNamespace(sample_id="IK345", aligned_sequence="ATGC")
+        decision = HumanReviewDecision(
+            sample_id="IK345",
+            consensus_position=2,
+            original_base="G",
+            reviewed_base="T",
+            decision_type=DecisionType.CHANGE,
+            reason="trace confirmed",
+            evidence_reference=None,
+            reviewer="researcher",
+            timestamp=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        )
+        window.view_model = SimpleNamespace(row_at=lambda _index: row)
+        window.review_sessions = {
+            "IK345": ConsensusReviewSession("IK345", row, decisions=[decision])
+        }
+        window.selected_row_index = 0
+        window.on_register_reviewed_consensus = received.append
+        window._review_status_var = SimpleNamespace(set=lambda _value: None)
+
+        window._register_selected_reviewed_consensus()
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].sample_id, "IK345")
+        self.assertEqual(received[0].reviewed_sequence, "ATTC")
+
     def test_builds_rows_from_aligned_consensus_set_with_gap_aware_mapping(self):
         model = build_multiple_alignment_view_model(make_aligned_consensus_set())
 

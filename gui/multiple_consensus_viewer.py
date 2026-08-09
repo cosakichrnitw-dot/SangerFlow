@@ -20,12 +20,14 @@ from core.consensus_alignment import AlignedConsensusSet
 from core.consensus_evidence_map import ConsensusEvidenceMap
 from core.consensus_review_bridge import ReviewEvidence, TraceJumpTarget
 from core.consensus_review_session import ConsensusReviewSession
-from core.human_review import DecisionType, HumanReviewDecision
+from core.human_review import DecisionType, HumanReviewDecision, ReviewedConsensus
+from core.reviewed_consensus import build_reviewed_consensus
 from gui.alignment_editor_state import AlignmentEditorState
 
 
 ConsensusSelectedCallback = Callable[[str, int], None]
 TraceJumpCallback = Callable[[str, int], None]
+ReviewedConsensusRegistrationCallback = Callable[[ReviewedConsensus], None]
 _ALLOWED_ALIGNMENT_SYMBOLS = frozenset("ACGTNRYSWKMBDHV-")
 _LABEL_WIDTH = 150
 _CELL_WIDTH = 18
@@ -296,6 +298,7 @@ class MultipleConsensusAlignmentWindow(tk.Toplevel):
         on_consensus_selected: Optional[ConsensusSelectedCallback] = None,
         evidence_map: Optional[ConsensusEvidenceMap] = None,
         on_trace_jump: Optional[TraceJumpCallback] = None,
+        on_register_reviewed_consensus: Optional[ReviewedConsensusRegistrationCallback] = None,
     ) -> None:
         if isinstance(view_model, AlignedConsensusSet):
             view_model = build_multiple_alignment_view_model(view_model)
@@ -309,12 +312,18 @@ class MultipleConsensusAlignmentWindow(tk.Toplevel):
             raise ValueError("evidence_map must be a ConsensusEvidenceMap or None")
         if on_trace_jump is not None and not callable(on_trace_jump):
             raise ValueError("on_trace_jump must be callable or None")
+        if (
+            on_register_reviewed_consensus is not None
+            and not callable(on_register_reviewed_consensus)
+        ):
+            raise ValueError("on_register_reviewed_consensus must be callable or None")
         super().__init__(master)
         self.view_model = view_model
         self.variable_sites = build_variable_sites(view_model)
         self.on_consensus_selected = on_consensus_selected
         self.evidence_map = evidence_map
         self.on_trace_jump = on_trace_jump
+        self.on_register_reviewed_consensus = on_register_reviewed_consensus
         self._selected_review_evidence: Optional[ReviewEvidence] = None
         # The displayed matrix remains an immutable adapter of the MAFFT
         # result.  Edits are a display overlay plus append-only review
@@ -549,6 +558,13 @@ class MultipleConsensusAlignmentWindow(tk.Toplevel):
         self._review_reason_label.pack(anchor="w", pady=(4, 0))
         self._review_reason_entry.pack(fill="x")
         self._review_save_button.pack(anchor="e", pady=(6, 0))
+        self._register_reviewed_consensus_button = tk.Button(
+            human_review_frame,
+            text="Register Reviewed Consensus",
+            state="disabled",
+            command=self._register_selected_reviewed_consensus,
+        )
+        self._register_reviewed_consensus_button.pack(anchor="e", pady=(4, 0))
         self._review_status_label.pack(anchor="w", pady=(4, 0))
         self._set_human_review_available(False)
 
@@ -866,6 +882,7 @@ class MultipleConsensusAlignmentWindow(tk.Toplevel):
         self._reviewed_base_var.set(base)
         self._review_reason_var.set("")
         self._set_human_review_available(True)
+        self._configure_reviewed_consensus_registration(sample_id)
 
     def _set_human_review_available(self, available: bool) -> None:
         """Disable all edit controls for gaps or when no matrix base is selected."""
@@ -878,6 +895,23 @@ class MultipleConsensusAlignmentWindow(tk.Toplevel):
         self._reviewed_base_entry.configure(state=state)
         self._review_reason_entry.configure(state=state)
         self._review_save_button.configure(state=state)
+        if not available:
+            self._configure_reviewed_consensus_registration(None)
+
+    def _configure_reviewed_consensus_registration(self, sample_id: Optional[str]) -> None:
+        """Enable registration only for a selected sample with a review session."""
+
+        if not hasattr(self, "_register_reviewed_consensus_button"):
+            return
+        session = self.review_sessions.get(sample_id) if sample_id is not None else None
+        enabled = (
+            self.on_register_reviewed_consensus is not None
+            and session is not None
+            and bool(session.get_decisions())
+        )
+        self._register_reviewed_consensus_button.configure(
+            state="normal" if enabled else "disabled"
+        )
 
     def _save_human_review_decision(self) -> None:
         """Append one immutable decision; do not build ReviewedConsensus here."""
@@ -909,6 +943,35 @@ class MultipleConsensusAlignmentWindow(tk.Toplevel):
             f"Decision: {decision.decision_type.value} "
             f"{decision.original_base} → {rendered_base}"
         )
+        self._configure_reviewed_consensus_registration(decision.sample_id)
+
+    def _register_selected_reviewed_consensus(self) -> None:
+        """Build one immutable review value and delegate Project registration.
+
+        The viewer intentionally has no Project dependency.  A configured
+        application callback decides dataset identity, parent lineage, and how
+        to retain the returned immutable Project.
+        """
+
+        if self.on_register_reviewed_consensus is None or self.selected_row_index is None:
+            return
+        row = self.view_model.row_at(self.selected_row_index)
+        session = self.review_sessions.get(row.sample_id)
+        if session is None or not session.get_decisions():
+            self._review_status_var.set("Review status: save a decision before registration")
+            self._configure_reviewed_consensus_registration(row.sample_id)
+            return
+        try:
+            reviewed_consensus = build_reviewed_consensus(
+                row.sample_id,
+                row.aligned_sequence.replace("-", ""),
+                session,
+            )
+            self.on_register_reviewed_consensus(reviewed_consensus)
+        except (TypeError, ValueError, RuntimeError) as error:
+            self._review_status_var.set(f"Review status: registration failed: {error}")
+            return
+        self._review_status_var.set("Review status: reviewed consensus registration requested")
 
     def _apply_human_review_overlay(self, decision: HumanReviewDecision) -> bool:
         """Reflect a saved base-changing form decision in the Matrix overlay.

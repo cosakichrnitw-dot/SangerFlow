@@ -11,8 +11,11 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Mapping
 
+from core.alignment_dataset import AlignmentDataset
 from core.analysis_result import AnalysisResult, AnalysisResultType
 from core.sequence_dataset import SequenceDataset
+
+ProjectDataset = SequenceDataset | AlignmentDataset
 
 
 class DerivationType(str, Enum):
@@ -23,6 +26,7 @@ class DerivationType(str, Enum):
     CONSENSUS_FROM_PAIRS = "CONSENSUS_FROM_PAIRS"
     REVIEWED_FROM_CONSENSUS = "REVIEWED_FROM_CONSENSUS"
     ALIGNED_WITH_MAFFT = "ALIGNED_WITH_MAFFT"
+    ALIGNMENT_FROM_DATASET = "ALIGNMENT_FROM_DATASET"
     SUBSET_FROM_DATASET = "SUBSET_FROM_DATASET"
 
 
@@ -34,25 +38,35 @@ def _freeze_metadata(value: Mapping[str, object] | None) -> Mapping[str, object]
     return MappingProxyType(dict(value))
 
 
+def _is_project_dataset(value: object) -> bool:
+    return isinstance(value, (SequenceDataset, AlignmentDataset))
+
+
+def _dataset_id(dataset: ProjectDataset) -> str:
+    if isinstance(dataset, SequenceDataset):
+        return dataset.dataset_id
+    return dataset.alignment_id
+
+
 @dataclass(frozen=True)
 class ProjectDatasetEntry:
     """An immutable project-local label and lineage link for one dataset."""
 
-    dataset: SequenceDataset
+    dataset: ProjectDataset
     display_name: str
     parent_dataset_id: str | None = None
     derivation_type: DerivationType | None = None
     metadata: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.dataset, SequenceDataset):
-            raise ValueError("dataset must be a SequenceDataset")
+        if not _is_project_dataset(self.dataset):
+            raise ValueError("dataset must be a SequenceDataset or AlignmentDataset")
         if not isinstance(self.display_name, str) or not self.display_name.strip():
             raise ValueError("display_name must be a non-empty string")
         if self.parent_dataset_id is not None:
             if not isinstance(self.parent_dataset_id, str) or not self.parent_dataset_id.strip():
                 raise ValueError("parent_dataset_id must be a non-empty string or None")
-            if self.parent_dataset_id == self.dataset.dataset_id:
+            if self.parent_dataset_id == _dataset_id(self.dataset):
                 raise ValueError("a dataset cannot be its own parent")
         if self.derivation_type is not None and not isinstance(self.derivation_type, DerivationType):
             raise ValueError("derivation_type must be a DerivationType or None")
@@ -137,7 +151,7 @@ class Project:
 
     @property
     def dataset_ids(self) -> tuple[str, ...]:
-        return tuple(entry.dataset.dataset_id for entry in self.dataset_entries)
+        return tuple(_dataset_id(entry.dataset) for entry in self.dataset_entries)
 
     @property
     def analysis_result_count(self) -> int:
@@ -149,7 +163,7 @@ class Project:
 
     def add_dataset(
         self,
-        dataset: SequenceDataset,
+        dataset: ProjectDataset,
         *,
         display_name: str | None = None,
         parent_dataset_id: str | None = None,
@@ -158,11 +172,12 @@ class Project:
     ) -> "Project":
         """Return a new project with ``dataset`` appended in input order."""
 
-        if not isinstance(dataset, SequenceDataset):
-            raise ValueError("dataset must be a SequenceDataset")
-        if dataset.dataset_id in self.dataset_ids:
-            raise ValueError(f"dataset_id already exists in project: {dataset.dataset_id}")
-        if parent_dataset_id == dataset.dataset_id:
+        if not _is_project_dataset(dataset):
+            raise ValueError("dataset must be a SequenceDataset or AlignmentDataset")
+        dataset_id = _dataset_id(dataset)
+        if dataset_id in self.dataset_ids:
+            raise ValueError(f"dataset_id already exists in project: {dataset_id}")
+        if parent_dataset_id == dataset_id:
             raise ValueError("a dataset cannot be its own parent")
         if parent_dataset_id is not None and not self.has_dataset(parent_dataset_id):
             raise ValueError(f"parent_dataset_id does not exist in project: {parent_dataset_id}")
@@ -178,11 +193,11 @@ class Project:
 
     def get_entry(self, dataset_id: str) -> ProjectDatasetEntry:
         for entry in self.dataset_entries:
-            if entry.dataset.dataset_id == dataset_id:
+            if _dataset_id(entry.dataset) == dataset_id:
                 return entry
         raise KeyError(dataset_id)
 
-    def get_dataset(self, dataset_id: str) -> SequenceDataset:
+    def get_dataset(self, dataset_id: str) -> ProjectDataset:
         return self.get_entry(dataset_id).dataset
 
     def has_dataset(self, dataset_id: str) -> bool:
@@ -252,7 +267,7 @@ class Project:
         entry = self.get_entry(dataset_id)
         renamed_entry = replace(entry, display_name=new_display_name)
         entries = tuple(
-            renamed_entry if current.dataset.dataset_id == dataset_id else current
+            renamed_entry if _dataset_id(current.dataset) == dataset_id else current
             for current in self.dataset_entries
         )
         return replace(self, dataset_entries=entries)
@@ -283,13 +298,13 @@ class Project:
         return replace(
             self,
             dataset_entries=tuple(
-                entry for entry in self.dataset_entries if entry.dataset.dataset_id != dataset_id
+                entry for entry in self.dataset_entries if _dataset_id(entry.dataset) != dataset_id
             ),
         )
 
     def child_dataset_ids(self, parent_dataset_id: str) -> tuple[str, ...]:
         return tuple(
-            entry.dataset.dataset_id
+            _dataset_id(entry.dataset)
             for entry in self.dataset_entries
             if entry.parent_dataset_id == parent_dataset_id
         )
@@ -298,10 +313,10 @@ class Project:
         """Return ancestor IDs followed by ``dataset_id`` itself."""
 
         entry = self.get_entry(dataset_id)
-        lineage = [entry.dataset.dataset_id]
+        lineage = [_dataset_id(entry.dataset)]
         while entry.parent_dataset_id is not None:
             entry = self.get_entry(entry.parent_dataset_id)
-            lineage.append(entry.dataset.dataset_id)
+            lineage.append(_dataset_id(entry.dataset))
         return tuple(reversed(lineage))
 
     def _validate_lineage(self) -> None:

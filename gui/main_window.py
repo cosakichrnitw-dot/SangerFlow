@@ -888,7 +888,7 @@ class MainWindow:
             on_trace_jump=self._jump_to_consensus_trace,
         )
 
-    def open_consensus_review_manager(self):
+    def open_consensus_review_manager(self, *, on_register_reviewed_consensus=None):
         """Open the existing review-manager workflow for loaded clear pairs.
 
         Main Viewer only supplies its loaded reads and callback routes. Pair
@@ -932,6 +932,7 @@ class MainWindow:
             on_open_multiple=lambda aligned_set: self._open_multiple_consensus_review(
                 aligned_set,
                 review_inputs.evidence_map,
+                on_register_reviewed_consensus=on_register_reviewed_consensus,
             ),
         )
 
@@ -946,15 +947,22 @@ class MainWindow:
             raise ValueError("selected candidate has no Single Consensus Review input")
         return self.open_single_consensus_review(view_model)
 
-    def _open_multiple_consensus_review(self, aligned_consensus_set, evidence_map):
+    def _open_multiple_consensus_review(
+        self,
+        aligned_consensus_set,
+        evidence_map,
+        *,
+        on_register_reviewed_consensus=None,
+    ):
         """Route manager-owned MAFFT output into the existing multiple viewer."""
 
-        return MultipleConsensusAlignmentWindow(
-            self.root,
-            aligned_consensus_set,
-            evidence_map=evidence_map,
-            on_trace_jump=self._jump_to_consensus_trace,
-        )
+        kwargs = {
+            "evidence_map": evidence_map,
+            "on_trace_jump": self._jump_to_consensus_trace,
+        }
+        if on_register_reviewed_consensus is not None:
+            kwargs["on_register_reviewed_consensus"] = on_register_reviewed_consensus
+        return MultipleConsensusAlignmentWindow(self.root, aligned_consensus_set, **kwargs)
 
     def open_consensus_review_selector(self):
         """Backward-compatible alias for the manager-based review entry."""

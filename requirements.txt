@@ -2,7 +2,7 @@ biopython==1.87
 colorama==0.4.6
 numpy==1.26.4
 pyqtgraph==0.14.0
-PySide6==6.6.3
-PySide6_Addons==6.6.3
-PySide6_Essentials==6.6.3
-shiboken6==6.6.3
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+shiboken6==6.11.1

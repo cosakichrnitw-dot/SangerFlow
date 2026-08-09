@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from core.alignment_dataset import AlignmentDataset, AlignmentRecord
 from core.project import DerivationType, Project
 from core.sequence_dataset import SequenceDataset, SourceType
 from workflow.mafft_workflow import align_sequence_dataset
@@ -73,6 +74,32 @@ class ProjectAlignmentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "IMPORTED_ALIGNMENT"):
             add_alignment_to_project(project, make_parent_dataset(), parent_dataset_id="input")
+
+    def test_adds_alignment_dataset_model_to_project(self) -> None:
+        parent = make_parent_dataset()
+        alignment = AlignmentDataset.from_sequence_dataset(
+            alignment_id="input_alignment",
+            name="Input Alignment",
+            parent_dataset=parent,
+            records=(
+                AlignmentRecord("IK345", "IK345", "ATG-CAA"),
+                AlignmentRecord("IK346", "IK346", "ATGTCAA"),
+            ),
+            metadata={
+                "parent_dataset_id": "input",
+                "derivation_type": DerivationType.ALIGNMENT_FROM_DATASET.value,
+            },
+        )
+        project = Project.create("project", "Project").add_dataset(parent)
+
+        updated = add_alignment_to_project(project, alignment)
+
+        self.assertEqual(updated.dataset_ids, ("input", "input_alignment"))
+        self.assertIs(updated.get_dataset("input_alignment"), alignment)
+        self.assertEqual(
+            updated.get_entry("input_alignment").derivation_type,
+            DerivationType.ALIGNMENT_FROM_DATASET,
+        )
 
 
 if __name__ == "__main__":
