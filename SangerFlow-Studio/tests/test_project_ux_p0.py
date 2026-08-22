@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 studio_root = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ from core.project import Project
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 from services.metadata_template import METADATA_TEMPLATE_HEADERS
 from services.metadata_template import write_project_metadata_excel_template
+from services.ab1_source_preflight import Ab1SourcePreflightError, Ab1SourcePreflightIssue
 from views.project_view import ProjectView
 
 
@@ -70,6 +72,24 @@ class ProjectUxP0Tests(unittest.TestCase):
             self.assertEqual(first[0].name, "sample.ab1")
             self.assertEqual(second[0].name, "sample_2.ab1")
             self.assertEqual(first[0].read_bytes(), b"AB1 placeholder")
+
+    def test_ab1_copy_mode_preflight_rejects_all_before_raw_data_copy(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            available = source / "available.ab1"
+            unavailable = source / "not-downloaded.ab1"
+            available.write_bytes(b"AB1 placeholder")
+            self.controller.create_project("Project", location=directory)
+            workspace = self.controller.current_workspace()
+            self.assertIsNotNone(workspace)
+            error = Ab1SourcePreflightError(
+                (Ab1SourcePreflightIssue(unavailable, "cloud_placeholder"),)
+            )
+            with patch("controllers.project_controller.preflight_ab1_copy_sources", side_effect=error):
+                with self.assertRaises(Ab1SourcePreflightError):
+                    self.controller._resolve_ab1_source_files((available, unavailable), "copy")
+            self.assertEqual(tuple(workspace.raw_data_directory.iterdir()), ())
 
     def test_close_project_resets_project_and_viewer_state(self) -> None:
         self.state.set_project(Project.create("p", "Project"), dirty=True)

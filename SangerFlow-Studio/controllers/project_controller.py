@@ -70,6 +70,7 @@ from services.metadata_template import (
     write_project_metadata_excel_template,
 )
 from services.application_settings import resolve_studio_mafft_executable
+from services.ab1_source_preflight import preflight_ab1_copy_sources
 from services.project_workspace import (
     ProjectWorkspace,
     create_project_workspace,
@@ -534,6 +535,10 @@ class ProjectController(QObject):
         workspace = self.current_workspace()
         if workspace is None:
             raise ValueError("Copying AB1 files requires a saved Project Workspace.")
+        # Do this before making Raw_Data or copying one file.  In particular,
+        # iCloud/File Provider placeholders can look present in Finder but have
+        # no local data and otherwise fail only after a long copy attempt.
+        preflight_ab1_copy_sources(files)
         workspace.ensure_directories()
         copied: list[Path] = []
         for source in files:

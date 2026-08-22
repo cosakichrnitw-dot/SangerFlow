@@ -40,7 +40,6 @@ from core.reviewed_consensus import build_reviewed_consensus
 from core.samples import PairingStatus, Sample, classify_reads_by_filename
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 from core.trimming import trim_sequence
-from gui.consensus_viewer import SingleConsensusViewModel, build_single_consensus_view_model
 from widgets.sequence_grid import SequenceGridRow, SequenceGridWidget
 from widgets.alignment_edit_operations import (
     BaseEditOperation,
@@ -49,6 +48,10 @@ from widgets.alignment_edit_operations import (
 )
 from widgets.viewers.pair_consensus_chromatogram import PairConsensusChromatogramPanel
 from widgets.viewers.multiple_consensus_alignment import TemporaryConsensusAlignment
+from widgets.viewers.single_consensus_view_model import (
+    SingleConsensusViewModel,
+    build_single_consensus_view_model,
+)
 from widgets.viewers.base_viewer import BaseViewer
 from widgets.viewers.viewer_actions import ViewerAction
 

@@ -47,6 +47,14 @@ __pycache__/
 
 output/
 
+# =========================
+# Local packaging artifacts
+# =========================
+
+build/
+dist/
+*.spec.bak
+
 
 # =========================
 # Temporary files
@@ -61,3 +69,13 @@ output/
 
 *_blast_identification.xlsx
 SangerFlow-Studio/*.sangerflow
+
+# =========================
+# Local Python environments
+# =========================
+
+.venv
+.venv_prepackaging_*/
+.venv_workspace_rebuild_*/
+.vscode/
+SangerFlow-Studio/.vscode/
