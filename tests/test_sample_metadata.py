@@ -8,8 +8,13 @@ import unittest
 
 from openpyxl import Workbook
 
-from core.sequence_dataset import SequenceDataset, SourceType
-from metadata.sample_metadata import import_sample_metadata, merge_sample_metadata
+from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
+from core.lineage import RecordProvenance, RecordRef
+from metadata.sample_metadata import (
+    import_sample_metadata,
+    merge_sample_metadata,
+    merge_sample_metadata_for_datasets,
+)
 
 
 def make_dataset() -> SequenceDataset:
@@ -19,6 +24,18 @@ def make_dataset() -> SequenceDataset:
 
 
 class SampleMetadataTests(unittest.TestCase):
+    @staticmethod
+    def duplicate_scope() -> tuple[SequenceDataset, SequenceDataset]:
+        return (
+            SequenceDataset(
+                "run_a", "Run A", SourceType.AB1_TRIMMED,
+                (SequenceRecord("R1", "ATGC", metadata={"source_batch": "Batch-A"}),),
+            ),
+            SequenceDataset(
+                "run_b", "Run B", SourceType.AB1_TRIMMED,
+                (SequenceRecord("R1", "ATGT", metadata={"source_batch": "Batch-B"}),),
+            ),
+        )
     def test_imports_csv_and_merges_metadata_without_changing_original_dataset(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "samples.csv"
@@ -39,6 +56,10 @@ class SampleMetadataTests(unittest.TestCase):
             self.assertEqual(merged.get_record("IK346").metadata["longitude"], 110.5)
             self.assertEqual(original.get_record("IK345").metadata, {})
             self.assertTrue(merged.metadata["sample_metadata_merged"])
+            self.assertEqual(
+                merged.get_record("IK345").provenance,
+                RecordProvenance((RecordRef("coi", "IK345"),)),
+            )
             with self.assertRaises(TypeError):
                 merged.get_record("IK345").metadata["country"] = "changed"  # type: ignore[index]
 
@@ -71,6 +92,60 @@ class SampleMetadataTests(unittest.TestCase):
             missing_column.write_text("Species,Country\nRhynchobatus,Indonesia\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Sample_ID"):
                 import_sample_metadata(missing_column)
+
+    def test_duplicate_sample_ids_match_source_batch_from_csv_and_preserve_identity(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.csv"
+            path.write_text(
+                "Sample_ID,Source_Batch,Location,Notes\n"
+                "R1,Batch-A,Rembang,日本語の注記\n"
+                "R1,Batch-B,Cirebon,échantillon\n",
+                encoding="utf-8",
+            )
+            first, second = merge_sample_metadata_for_datasets(
+                self.duplicate_scope(), import_sample_metadata(path)
+            )
+        self.assertEqual(first.get_record("R1").metadata["location"], "Rembang")
+        self.assertEqual(second.get_record("R1").metadata["location"], "Cirebon")
+        self.assertEqual(first.get_record("R1").metadata["source_batch"], "Batch-A")
+        self.assertEqual(second.get_record("R1").metadata["source_batch"], "Batch-B")
+        self.assertEqual(first.get_record("R1").metadata["notes"], "日本語の注記")
+        self.assertEqual(first.get_record("R1").sequence_id, "R1")
+
+    def test_duplicate_sample_ids_require_source_batch_and_reject_wrong_or_duplicate_batch(self) -> None:
+        with TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.csv"
+            missing.write_text("Sample_ID,Location\nR1,Rembang\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "ambiguous metadata match.*R1"):
+                merge_sample_metadata_for_datasets(self.duplicate_scope(), import_sample_metadata(missing))
+
+            wrong = Path(directory) / "wrong.csv"
+            wrong.write_text("Sample_ID,Source_Batch,Location\nR1,Other,Rembang\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unmatched.*R1"):
+                merge_sample_metadata_for_datasets(self.duplicate_scope(), import_sample_metadata(wrong))
+
+            duplicate = Path(directory) / "duplicate.csv"
+            duplicate.write_text(
+                "Sample_ID,Source_Batch,Location\nR1,Batch-A,Rembang\nR1,Batch-A,Cirebon\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, r"duplicate Sample_ID \+ Source_Batch.*R1"):
+                import_sample_metadata(duplicate)
+
+    def test_duplicate_sample_ids_match_source_batch_from_xlsx(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(("Sample_ID", "Source_Batch", "Location"))
+            sheet.append(("R1", "Batch-A", "Rembang"))
+            sheet.append(("R1", "Batch-B", "Cirebon"))
+            workbook.save(path)
+            workbook.close()
+            first, second = merge_sample_metadata_for_datasets(
+                self.duplicate_scope(), import_sample_metadata(path)
+            )
+        self.assertEqual((first.get_record("R1").metadata["location"], second.get_record("R1").metadata["location"]), ("Rembang", "Cirebon"))
 
 
 if __name__ == "__main__":

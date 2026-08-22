@@ -30,8 +30,8 @@ def run_blast_workflow(
 
     ``runner`` is intentionally injectable for callers that supply an
     existing BLAST service or tests.  When omitted, the established
-    ``core.blast.blast_sequence`` function is called with the selected
-    database.  A runner returns the existing raw hit mapping shape, e.g.
+    NCBI BLAST Common URL API runner is called with the selected database.
+    A runner returns the existing raw hit mapping shape, e.g.
     ``species``, ``identity``, ``coverage``, ``e_value``, ``accession``, and
     ``title``.
     """
@@ -77,12 +77,14 @@ def run_blast_workflow(
 
 
 def _default_runner(database: str) -> BlastRunner:
-    """Adapt the existing BLAST executor without importing GUI code."""
+    """Use the workflow-level NCBI BLAST URL API executor."""
 
-    from core.blast import blast_sequence
+    from workflow.ncbi_blast_service import NcbiBlastRunner, NcbiBlastSettings
+
+    ncbi_runner = NcbiBlastRunner(NcbiBlastSettings(database=database))
 
     def runner(sequence: str) -> Iterable[Mapping[str, object]]:
-        return blast_sequence(sequence, database=database)
+        return ncbi_runner(sequence)
 
     return runner
 
@@ -119,6 +121,8 @@ def _blast_hit_from_raw(
         evalue=_raw_value(raw_hit, "e_value", fallback="evalue"),
         alignment_length=_raw_value(raw_hit, "alignment_length"),
         database=_raw_text(raw_hit, "database") or database,
+        bit_score=_raw_optional_number(raw_hit, "bit_score"),
+        description=_raw_text(raw_hit, "description", fallback="title"),
     )
 
 
@@ -149,3 +153,7 @@ def _required_text(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
     return value
+
+
+def _raw_optional_number(raw_hit: Mapping[str, object], key: str) -> object | None:
+    return raw_hit.get(key)

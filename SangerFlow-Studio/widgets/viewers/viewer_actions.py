@@ -15,6 +15,14 @@ class ViewerAction:
     callback: Callable[[], None]
     tooltip: str = ""
     enabled: bool = True
+    # Presentation metadata deliberately remains small.  Action IDs and
+    # callbacks are the stable application contract; these fields only decide
+    # where a currently active viewer action is presented.
+    toolbar: bool = False
+    toolbar_group: str | None = None
+    menu_group: str | None = None
+    context_scope: str | None = None
+    priority: int = 0
 
 
 class ViewerActionProvider(Protocol):

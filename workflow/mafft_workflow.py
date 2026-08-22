@@ -19,7 +19,7 @@ def align_sequence_dataset(
     dataset_id: str | None = None,
     name: str | None = None,
     alignment_id: str | None = None,
-    mafft_executable: str = "mafft",
+    mafft_executable: str | None = None,
     runner: Optional[Callable[..., object]] = None,
 ) -> SequenceDataset:
     """Run existing MAFFT core logic and return a new alignment dataset.

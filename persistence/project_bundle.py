@@ -14,11 +14,12 @@ import zipfile
 
 from core.project import Project
 from core.result_repository import FilesystemResultRepository, ResultRepository
+from core.version import __version__
 from persistence.project_json import ProjectPersistenceError, load_project, save_project
 
 
 PROJECT_BUNDLE_SCHEMA_VERSION = 1
-SANGERFLOW_VERSION = "development"
+SANGERFLOW_VERSION = __version__
 
 
 class ProjectBundleError(ValueError):
@@ -27,7 +28,12 @@ class ProjectBundleError(ValueError):
 
 @dataclass(frozen=True)
 class ProjectBundleOptions:
-    """Immutable options for the portable bundle's intentionally limited scope."""
+    """Immutable options for the portable bundle's intentionally limited scope.
+
+    ``include_raw_data`` is retained only for backwards-compatible argument
+    validation.  Raw AB1 files are *not* embedded by the current bundle
+    format; callers must keep them in the adjacent Project Workspace.
+    """
 
     include_results: bool = True
     include_raw_data: bool = False
@@ -81,7 +87,7 @@ def save_project_bundle(
                 "sangerflow_version": SANGERFLOW_VERSION,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "include_results": resolved_options.include_results,
-                "include_raw_data": resolved_options.include_raw_data,
+                "raw_data_mode": "external_workspace_references",
             },
         )
         _write_json(
@@ -197,6 +203,11 @@ def _coerce_options(
     if options is None:
         return ProjectBundleOptions()
     if isinstance(options, ProjectBundleOptions):
+        if options.include_raw_data:
+            raise ProjectBundleError(
+                "include_raw_data is not implemented: .sangerflow bundles "
+                "store external Project Workspace references only"
+            )
         return options
     if isinstance(options, Mapping):
         try:
@@ -204,6 +215,11 @@ def _coerce_options(
             include_raw_data = options.get("include_raw_data", False)
             if not isinstance(include_results, bool) or not isinstance(include_raw_data, bool):
                 raise ValueError
+            if include_raw_data:
+                raise ProjectBundleError(
+                    "include_raw_data is not implemented: .sangerflow bundles "
+                    "store external Project Workspace references only"
+                )
             return ProjectBundleOptions(
                 include_results=include_results,
                 include_raw_data=include_raw_data,

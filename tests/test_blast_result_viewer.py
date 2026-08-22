@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import os
 import tkinter as tk
 import unittest
+
+import pytest
 
 from core.blast_result import BlastAnalysisMode, BlastHit, BlastResultDataset
 from core.blast_filter import BlastResultSelection
@@ -64,6 +67,11 @@ class BlastResultViewModelTests(unittest.TestCase):
             result.name = "changed"  # type: ignore[misc]
 
 
+@pytest.mark.legacy_tk
+@unittest.skipUnless(
+    os.environ.get("SANGERFLOW_RUN_LEGACY_TK") == "1",
+    "legacy Tkinter native tests require SANGERFLOW_RUN_LEGACY_TK=1",
+)
 class BlastResultViewerTests(unittest.TestCase):
     def test_gui_creation_and_query_selection_when_tk_is_available(self) -> None:
         try:

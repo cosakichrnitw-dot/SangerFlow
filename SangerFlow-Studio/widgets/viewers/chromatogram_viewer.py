@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from typing import Iterable
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QStaticText
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QStaticText, QTransform
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -32,7 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.selection import SelectionKind, StudioSelection
+from app.icon_registry import studio_icon
 from core.models import SangerRead
+from widgets.font_utils import fixed_width_font
 from widgets.viewers.base_viewer import BaseViewer
 from widgets.viewers.viewer_actions import ViewerAction
 
@@ -113,15 +115,21 @@ class ChromatogramReadView:
 
     @property
     def q20_rate(self) -> float:
-        if not self.quality:
-            return 0.0
-        return 100.0 * sum(quality >= 20 for quality in self.quality) / len(self.quality)
+        return self.quality_rate_at_or_above(20)
 
     @property
     def q30_rate(self) -> float:
+        return self.quality_rate_at_or_above(30)
+
+    @property
+    def q40_rate(self) -> float:
+        return self.quality_rate_at_or_above(40)
+
+    def quality_rate_at_or_above(self, threshold: float) -> float:
+        """Return the percentage of bases meeting a Phred quality threshold."""
         if not self.quality:
             return 0.0
-        return 100.0 * sum(quality >= 30 for quality in self.quality) / len(self.quality)
+        return 100.0 * sum(quality >= threshold for quality in self.quality) / len(self.quality)
 
     @property
     def trim_length(self) -> int:
@@ -288,6 +296,7 @@ class ChromatogramViewer(BaseViewer):
         self._reads = tuple(_read_view(read) for read in reads)
         self._visibility_source_key = source_object_id or f"chromatogram:{id(self)}"
         self._visibility_manager = getattr(context, "read_visibility_manager", None)
+        self._visibility_connected = False
         self._selected_read_id: str | None = None
         self._selected_base: SelectedBaseInfo | None = None
         self._show_trim_region = False
@@ -305,6 +314,7 @@ class ChromatogramViewer(BaseViewer):
                 self._visibility_manager.visible_ids(self._visibility_source_key, read_ids)
             )
             self._visibility_manager.visibility_changed.connect(self._visibility_changed)
+            self._visibility_connected = True
         self._action_provider = ChromatogramViewerActionProvider()
         super().__init__(
             viewer_id=f"chromatogram-viewer-{_safe_identifier(source_object_id) if source_object_id else id(self)}",
@@ -313,6 +323,17 @@ class ChromatogramViewer(BaseViewer):
             source_object_id=source_object_id,
         )
         self._build_ui()
+
+    def close_viewer(self) -> bool:
+        self._disconnect_visibility_manager()
+        return super().close_viewer()
+
+    def _disconnect_visibility_manager(self, *_args: object) -> None:
+        """Release the long-lived visibility signal before this viewer dies."""
+
+        if self._visibility_connected and self._visibility_manager is not None:
+            self._visibility_manager.visibility_changed.disconnect(self._visibility_changed)
+        self._visibility_connected = False
 
     @property
     def read_views(self) -> tuple[ChromatogramReadView, ...]:
@@ -358,13 +379,10 @@ class ChromatogramViewer(BaseViewer):
     def supported_actions(self) -> tuple[str, ...]:
         return (
             "chromatogram.toggle_trim_region",
-            "chromatogram.export",
-            "chromatogram.run_blast",
+            "chromatogram.open_sequence_editor",
             "chromatogram.build_consensus",
             "chromatogram.open_quality_report",
             "chromatogram.align",
-            "chromatogram.dev_start_paint_profile",
-            "chromatogram.dev_stop_paint_profile",
         )
 
     def open_dataset(self, dataset: object) -> None:
@@ -430,6 +448,43 @@ class ChromatogramViewer(BaseViewer):
         self._selected_read_id = read_view.read_id
         self._selected_base = _selected_base_info(read_view, raw_index)
         self._summary_label.setText(f"Reads: {len(self._visible_read_ids)}/{len(self._reads)}    Selected: {read_view.read_id}")
+        self._update_base_inspector()
+        self._canvas_widget.update_selection(self._selected_base)
+        self.selection_changed.emit(
+            StudioSelection(
+                kind=SelectionKind.SEQUENCE_RECORD,
+                object_id=read_view.read_id,
+                payload=read_view,
+                source_viewer_id=self.viewer_id,
+            )
+        )
+        return self._selected_base
+
+    def jump_to_trace_position(
+        self,
+        read_id: str,
+        raw_trace_position: int | float,
+    ) -> SelectedBaseInfo | None:
+        """Select the nearest base and center the viewport on a raw trace position."""
+
+        read_view = self._read_by_id(str(read_id))
+        if read_view.read_id not in self._visible_read_ids:
+            self.set_read_visible(read_view.read_id, True)
+        if not read_view.base_positions:
+            self.select_read(read_view.read_id)
+            return None
+        trace_position = float(raw_trace_position)
+        raw_index = min(
+            range(len(read_view.base_positions)),
+            key=lambda index: abs(read_view.base_positions[index] - trace_position),
+        )
+        self._selected_read_id = read_view.read_id
+        self._selected_base = _selected_base_info(read_view, raw_index)
+        self._center_on_trace_position(read_view.read_id, trace_position)
+        self._summary_label.setText(
+            f"Reads: {len(self._visible_read_ids)}/{len(self._reads)}    "
+            f"Selected: {read_view.read_id}"
+        )
         self._update_base_inspector()
         self._canvas_widget.update_selection(self._selected_base)
         self.selection_changed.emit(
@@ -539,6 +594,23 @@ class ChromatogramViewer(BaseViewer):
         self.status_message_changed.emit("Export action requested for Chromatogram Viewer.")
         self.export_requested.emit({"viewer": self, "read_id": self._selected_read_id})
 
+    def open_source_sequence_editor(self) -> object | None:
+        """Open the source SequenceDataset through the established tab route."""
+
+        dataset = self._source_dataset
+        context = self._context
+        tab_manager = getattr(context, "tab_manager", None)
+        if dataset is None or tab_manager is None:
+            return None
+        from core.sequence_dataset import SequenceDataset
+        from widgets.viewers.sequence_editor import SequenceEditor
+
+        if not isinstance(dataset, SequenceDataset):
+            return None
+        editor = SequenceEditor(dataset, context=context)
+        tab_manager.open_viewer(editor, resource_key=f"sequence-editor:{dataset.dataset_id}")
+        return editor
+
     def request_blast(self) -> None:
         self.status_message_changed.emit("BLAST action requested for selected chromatogram read.")
         self.open_related_requested.emit(
@@ -546,6 +618,16 @@ class ChromatogramViewer(BaseViewer):
         )
 
     def request_consensus(self) -> None:
+        context = self._context
+        controller = getattr(context, "project_controller", None)
+        consensus_method = getattr(
+            controller,
+            "run_consensus_workflow_from_chromatogram_viewer",
+            None,
+        )
+        if callable(consensus_method):
+            consensus_method(self)
+            return
         self.status_message_changed.emit("Consensus action requested for chromatogram reads.")
         self.open_related_requested.emit(
             {"action": "CONSENSUS", "viewer": self, "read_id": self._selected_read_id}
@@ -574,7 +656,9 @@ class ChromatogramViewer(BaseViewer):
         if controller is None:
             self.open_related_requested.emit({"action": "ALIGN", "viewer": self})
             return None
-        align_method = getattr(controller, "align_chromatogram_viewer", None)
+        align_method = getattr(controller, "request_alignment_from_chromatogram_viewer", None)
+        if not callable(align_method):
+            align_method = getattr(controller, "align_chromatogram_viewer", None)
         if not callable(align_method):
             self.open_related_requested.emit({"action": "ALIGN", "viewer": self})
             return None
@@ -585,29 +669,6 @@ class ChromatogramViewer(BaseViewer):
         self._summary_label = QLabel()
         self._summary_label.setObjectName("chromatogramSummaryLabel")
         layout.addWidget(self._summary_label)
-
-        self._dev_profile_panel = QWidget()
-        self._dev_profile_panel.setObjectName("chromatogramDevPaintProfilePanel")
-        dev_layout = QHBoxLayout(self._dev_profile_panel)
-        dev_layout.setContentsMargins(0, 0, 0, 4)
-        dev_layout.setSpacing(6)
-        dev_label = QLabel("Development paint profiling:")
-        dev_label.setStyleSheet("color: #777777;")
-        self._dev_start_profile_button = QPushButton("Start Paint Profile")
-        self._dev_start_profile_button.setObjectName("devStartPaintProfileButton")
-        self._dev_stop_profile_button = QPushButton("Stop Paint Profile")
-        self._dev_stop_profile_button.setObjectName("devStopPaintProfileButton")
-        self._dev_start_profile_button.clicked.connect(
-            lambda _checked=False: self.start_paint_profile()
-        )
-        self._dev_stop_profile_button.clicked.connect(
-            lambda _checked=False: self.stop_paint_profile()
-        )
-        dev_layout.addWidget(dev_label)
-        dev_layout.addWidget(self._dev_start_profile_button)
-        dev_layout.addWidget(self._dev_stop_profile_button)
-        dev_layout.addStretch(1)
-        layout.addWidget(self._dev_profile_panel)
 
         viewer_area = QGridLayout()
         viewer_area.setContentsMargins(0, 0, 0, 0)
@@ -710,59 +771,94 @@ class ChromatogramViewer(BaseViewer):
                 return read_view
         raise KeyError(read_id)
 
+    def _center_on_trace_position(self, read_id: str, raw_trace_position: float) -> None:
+        visible_reads = self.visible_read_views
+        try:
+            row_index = next(
+                index
+                for index, read_view in enumerate(visible_reads)
+                if read_view.read_id == read_id
+            )
+        except StopIteration:
+            row_index = 0
+        x_center = int(raw_trace_position * self._scale_x)
+        y_center = int(row_index * self._row_height() + self._row_height() / 2)
+        self._horizontal_scrollbar.setValue(
+            max(0, x_center - self._canvas_widget.viewport().width() // 2)
+        )
+        self._vertical_scrollbar.setValue(
+            max(0, y_center - self._canvas_widget.viewport().height() // 2)
+        )
+
 
 class ChromatogramViewerActionProvider:
     """Action connection points for trim display, Export, BLAST, and Consensus."""
 
     def actions_for(self, viewer: object) -> tuple[ViewerAction, ...]:
+        context = getattr(viewer, "_context", None)
+        controller = getattr(context, "project_controller", None)
+        dock_manager = getattr(context, "dock_manager", None)
+        consensus_available = callable(
+            getattr(controller, "run_consensus_workflow_from_chromatogram_viewer", None)
+        )
+        alignment_available = any(
+            callable(getattr(controller, method_name, None))
+            for method_name in (
+                "request_alignment_from_chromatogram_viewer",
+                "align_chromatogram_viewer",
+            )
+        )
         return (
             ViewerAction(
                 action_id="chromatogram.toggle_trim_region",
                 label="Show Trim Region",
                 tooltip="Toggle raw-coordinate trim outside-region overlay",
                 callback=getattr(viewer, "toggle_trim_region"),
+                toolbar=True,
+                menu_group="Dataset",
+                priority=100,
             ),
+            # ``request_export`` currently emits an integration signal with no
+            # normal Studio receiver.  Do not expose a misleading enabled
+            # Export launcher until a real chromatogram exporter is connected.
             ViewerAction(
-                action_id="chromatogram.export",
-                label="Export",
-                tooltip="Export selected chromatogram data",
-                callback=getattr(viewer, "request_export"),
-            ),
-            ViewerAction(
-                action_id="chromatogram.run_blast",
-                label="BLAST",
-                tooltip="Run BLAST for the selected read in a future workflow",
-                callback=getattr(viewer, "request_blast"),
+                action_id="chromatogram.open_sequence_editor",
+                label="Open Source Sequence Editor",
+                tooltip="Open the source SequenceDataset in Sequence Editor — Unaligned",
+                callback=getattr(viewer, "open_source_sequence_editor"),
+                enabled=getattr(viewer, "source_dataset", None) is not None
+                and getattr(getattr(viewer, "_context", None), "tab_manager", None) is not None,
+                menu_group="Dataset",
             ),
             ViewerAction(
                 action_id="chromatogram.build_consensus",
                 label="Consensus",
-                tooltip="Open the future consensus workflow for these reads",
+                tooltip="Create F/R consensus candidates for these reads",
                 callback=getattr(viewer, "request_consensus"),
+                enabled=consensus_available,
+                toolbar=True,
+                menu_group="Dataset",
+                priority=80,
             ),
             ViewerAction(
                 action_id="chromatogram.open_quality_report",
                 label="Quality Report",
                 tooltip="Open a Tkinter-style per-read quality report",
                 callback=getattr(viewer, "open_quality_report"),
+                enabled=dock_manager is not None,
+                toolbar=True,
+                menu_group="Dataset",
+                priority=90,
             ),
             ViewerAction(
                 action_id="chromatogram.align",
                 label="Align",
                 tooltip="Create an AlignmentDataset, add it to the current Project, and open Alignment Viewer",
                 callback=getattr(viewer, "align"),
-            ),
-            ViewerAction(
-                action_id="chromatogram.dev_start_paint_profile",
-                label="Dev: Start Paint Profile",
-                tooltip="Development-only: start collecting chromatogram paint timings",
-                callback=getattr(viewer, "start_paint_profile"),
-            ),
-            ViewerAction(
-                action_id="chromatogram.dev_stop_paint_profile",
-                label="Dev: Stop Paint Profile",
-                tooltip="Development-only: stop paint profiling and print timing summary to terminal",
-                callback=getattr(viewer, "stop_paint_profile"),
+                enabled=alignment_available,
+                toolbar=True,
+                menu_group="Align",
+                priority=70,
             ),
         )
 
@@ -786,8 +882,11 @@ class SamplePanelWidget(QWidget):
         self._title_label.setObjectName("chromatogramSamplePanelTitle")
         self._title_label.setStyleSheet("font-weight: 600; color: #333333;")
         self._all_button = QPushButton("All", self)
+        self._all_button.setIcon(studio_icon("select"))
         self._none_button = QPushButton("None", self)
+        self._none_button.setIcon(studio_icon("clear"))
         self._invert_button = QPushButton("Invert", self)
+        self._invert_button.setIcon(studio_icon("select"))
         for button in (self._all_button, self._none_button, self._invert_button):
             button.setFixedHeight(22)
         self._all_button.clicked.connect(self.select_all)
@@ -915,7 +1014,7 @@ class ReadLabelColumnWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#FFFFFF"))
-        painter.setFont(QFont("Courier", 9, QFont.Weight.Bold))
+        painter.setFont(fixed_width_font(9, QFont.Weight.Bold))
         painter.setPen(QPen(QColor("#333333")))
         row_height = self._viewer._row_height()
         y_offset = self._viewer._y_offset
@@ -1289,11 +1388,11 @@ class TracePixmapCache:
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         painter.translate(-tile_left, 0)
-        painter.scale(self._scale_x, self._scale_y)
-        self._paint_quality(painter)
+        transform = QTransform.fromScale(self._scale_x, self._scale_y)
+        self._paint_quality(painter, transform)
         if self._show_trim_region:
             self._paint_trim_overlay(painter)
-        self._paint_traces(painter)
+        self._paint_traces(painter, transform)
         painter.end()
         self._last_build_ns = perf_counter_ns() - start_ns
         return pixmap
@@ -1334,37 +1433,32 @@ class TracePixmapCache:
         max_tile = max(0, int((self._content_width - 1) // TRACE_TILE_WIDTH))
         return (min(first_tile, max_tile), min(last_tile, max_tile))
 
-    def _paint_quality(self, painter: QPainter) -> None:
+    def _paint_quality(self, painter: QPainter, transform: QTransform) -> None:
         path = self._read_view.render_cache.quality_path
         if path is None:
             return
-        painter.fillPath(path, QColor("#EEF9FF"))
+        painter.fillPath(transform.map(path), QColor("#EEF9FF"))
 
     def _paint_trim_overlay(self, painter: QPainter) -> None:
-        positions = self._read_view.base_positions
-        if not positions:
-            return
-        trim_start = max(0, min(self._read_view.trim_start, len(positions) - 1))
-        trim_end = max(0, min(self._read_view.trim_end, len(positions)))
-        center_y = TRACE_TOP + TRACE_HEIGHT / 2
-        y1 = center_y - TRACE_HEIGHT / 2
-        y2 = center_y
-        total_width = positions[-1]
+        painter.save()
         painter.setPen(QPen(Qt.PenStyle.NoPen))
         painter.setBrush(QColor(255, 153, 153, 150))
-        if trim_start > 0:
-            painter.drawRect(QRectF(0, y1, positions[trim_start], y2 - y1))
-        if trim_end < len(positions):
-            x1 = positions[trim_end]
-            painter.drawRect(QRectF(x1, y1, max(0, total_width - x1), y2 - y1))
+        for rect in _trim_overlay_scene_rects(
+            self._read_view,
+            scale_x=self._scale_x,
+            scale_y=self._scale_y,
+        ):
+            painter.drawRect(rect)
+        painter.restore()
 
-    def _paint_traces(self, painter: QPainter) -> None:
+    def _paint_traces(self, painter: QPainter, transform: QTransform) -> None:
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         for base in ("A", "C", "G", "T"):
             path = self._read_view.render_cache.trace_paths.get(base)
             if path is None:
                 continue
             painter.setPen(QPen(_TRACE_COLORS[base], 1))
-            painter.drawPath(path)
+            painter.drawPath(transform.map(path))
 
 
 class ChromatogramReadGraphicsItem(QGraphicsItem):
@@ -1506,7 +1600,7 @@ class ChromatogramReadGraphicsItem(QGraphicsItem):
         )
 
     def _paint_sequence(self, painter: QPainter, exposed: QRectF) -> None:
-        painter.setFont(QFont("Courier", 10, QFont.Weight.Bold))
+        painter.setFont(fixed_width_font(10, QFont.Weight.Bold))
         sequence_y = SEQUENCE_Y * self._scale_y
         left = exposed.left()
         right = exposed.right()
@@ -1528,7 +1622,7 @@ class ChromatogramReadGraphicsItem(QGraphicsItem):
     def _paint_position_ticks(self, painter: QPainter, exposed: QRectF) -> None:
         if not self._read_view.render_cache.tick_items:
             return
-        painter.setFont(QFont("Courier", 7))
+        painter.setFont(fixed_width_font(7))
         painter.setPen(QPen(QColor("#777777")))
         tick_y = RULER_Y * self._scale_y
         left = exposed.left()
@@ -1806,6 +1900,39 @@ def _build_tick_items(
             label = str(trimmed_position)
             items.append((base_positions[raw_index], label, QStaticText(label)))
     return tuple(items)
+
+
+def _trim_overlay_scene_rects(
+    read_view: ChromatogramReadView,
+    *,
+    scale_x: float,
+    scale_y: float,
+) -> tuple[QRectF, ...]:
+    """Return Tkinter-style trim outside-region overlays in scene coordinates."""
+
+    positions = read_view.base_positions
+    if not positions:
+        return ()
+    trim_start = max(0, min(read_view.trim_start, len(positions)))
+    trim_end = max(trim_start, min(read_view.trim_end, len(positions)))
+    center_y = TRACE_TOP + TRACE_HEIGHT / 2
+    y1 = (center_y - TRACE_HEIGHT / 2) * scale_y
+    y2 = center_y * scale_y
+    total_width = positions[-1] * scale_x
+    rects: list[QRectF] = []
+    if trim_start > 0:
+        start_x = (
+            positions[trim_start] * scale_x
+            if trim_start < len(positions)
+            else total_width
+        )
+        if start_x > 0:
+            rects.append(QRectF(0, y1, start_x, y2 - y1))
+    if trim_end < len(positions):
+        end_x = positions[trim_end] * scale_x
+        if total_width > end_x:
+            rects.append(QRectF(end_x, y1, total_width - end_x, y2 - y1))
+    return tuple(rects)
 
 
 def _selected_base_info(read_view: ChromatogramReadView, raw_index: int) -> SelectedBaseInfo:

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sangerflow"
+version = "1.0.0.dev0"
+description = "Sanger sequencing analysis workflows and SangerFlow Studio"
+requires-python = ">=3.10"
+dependencies = [
+    "biopython==1.87",
+    "certifi==2026.6.17",
+    "numpy==1.26.4",
+    "openpyxl==3.1.5",
+    "PySide6==6.11.1",
+    "pyqtgraph==0.14.0",
+    "colorama==0.4.6",
+]
+
+[tool.setuptools]
+packages = ["core", "workflow", "export", "metadata", "persistence", "tools", "gui"]
+
+[tool.sangerflow]
+studio_entry_script = "SangerFlow-Studio/studio_entry.py"
+resource_files = ["config/qc_threshold.json"]
+application_name = "SangerFlow-Studio"
+
+[tool.pytest.ini_options]
+markers = [
+    "legacy_tk: legacy Tkinter native GUI smoke test; excluded from the Beta headless gate",
+]

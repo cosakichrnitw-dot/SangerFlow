@@ -10,7 +10,7 @@ import unittest
 from openpyxl import load_workbook
 
 from core.blast_result import BlastAnalysisMode, BlastHit, BlastResultDataset
-from export.blast_export import export_blast_result_to_excel, export_blast_result_to_tsv
+from export.blast_export import export_blast_result_to_csv, export_blast_result_to_excel, export_blast_result_to_excel_selected, export_blast_result_to_tsv
 
 
 def make_hit(query_id: str, accession: str, identity: float) -> BlastHit:
@@ -24,6 +24,7 @@ def make_hit(query_id: str, accession: str, identity: float) -> BlastHit:
         evalue=1e-50,
         alignment_length=658,
         database="nt",
+        description="COI reference sequence",
     )
 
 
@@ -90,11 +91,22 @@ class BlastExportTests(unittest.TestCase):
             lines = path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[0].split("\t"), [
                 "query_id", "rank", "hit_accession", "scientific_name", "organism",
-                "identity", "query_coverage", "evalue", "alignment_length", "database",
+                "identity", "query_coverage", "evalue", "alignment_length", "database", "bit_score", "description",
             ])
             self.assertEqual(lines[1].split("\t")[:3], ["IK345", "1", "AB-first"])
             self.assertEqual(lines[2].split("\t")[:3], ["IK345", "2", "AB-second"])
             self.assertEqual(lines[3].split("\t")[:3], ["IK346", "1", "CD-first"])
+
+    def test_csv_and_selected_xlsx_are_flat_unicode_safe_hit_exports(self) -> None:
+        result = make_result()
+        with TemporaryDirectory() as directory:
+            csv_path = Path(directory) / "blast.csv"
+            xlsx_path = Path(directory) / "blast.xlsx"
+            export_blast_result_to_csv(result, csv_path, columns=("query_id", "rank", "description"))
+            export_blast_result_to_excel_selected(result, xlsx_path, columns=("query_id", "hit_accession", "bit_score"))
+            self.assertEqual(csv_path.read_text(encoding="utf-8").splitlines()[0], "query_id,rank,description")
+            workbook = load_workbook(xlsx_path, data_only=True)
+            self.assertEqual([cell.value for cell in workbook["All Hits"][1]], ["query_id", "hit_accession", "bit_score"])
 
     def test_rejects_invalid_input_empty_hits_and_invalid_paths_without_mutating_result(self) -> None:
         result = make_result()

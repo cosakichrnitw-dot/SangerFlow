@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 import subprocess
 from typing import Callable
 
@@ -10,6 +11,47 @@ from core.tool_manager import ToolInfo, ToolStatus
 
 
 MAFFT_TOOL_NAME = "MAFFT"
+
+
+class MafftExecutableNotFoundError(RuntimeError):
+    """Raised when no configured or PATH-discovered MAFFT is available."""
+
+
+def resolve_mafft_executable(
+    configured_path: str | None = None,
+    *,
+    executable: str = "mafft",
+    which: Callable[[str], str | None] = shutil.which,
+) -> str:
+    """Resolve one executable path without invoking MAFFT.
+
+    A configured path is always preferred.  ``shutil.which`` provides native
+    PATH/PATHEXT handling on Windows and ordinary PATH handling on macOS.
+    """
+
+    if configured_path is not None:
+        if not isinstance(configured_path, str) or not configured_path.strip():
+            raise ValueError("configured_path must be a non-empty string or None")
+        configured = configured_path.strip()
+        resolved = which(configured)
+        if resolved is not None:
+            return resolved
+        # A direct absolute/relative filesystem path is valid even when the
+        # platform's which implementation does not accept that spelling.
+        if Path(configured).is_file():
+            return str(Path(configured))
+        raise MafftExecutableNotFoundError(
+            f"Configured MAFFT executable was not found: {configured}"
+        )
+    if not isinstance(executable, str) or not executable.strip():
+        raise ValueError("executable must be a non-empty string")
+    resolved = which(executable)
+    if resolved is None:
+        raise MafftExecutableNotFoundError(
+            "MAFFT is not configured and was not found on PATH. "
+            "Open Tools > Tool Settings to choose the MAFFT executable."
+        )
+    return resolved
 
 
 def detect_mafft(
@@ -22,6 +64,8 @@ def detect_mafft(
     if not isinstance(executable, str) or not executable.strip():
         raise ValueError("executable must be a non-empty string")
     executable_path = which(executable)
+    if executable_path is None and Path(executable).is_file():
+        executable_path = str(Path(executable))
     if executable_path is None:
         return ToolInfo(
             name=MAFFT_TOOL_NAME,

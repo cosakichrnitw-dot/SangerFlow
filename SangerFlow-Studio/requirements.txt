@@ -1,1 +1,2 @@
-PySide6>=6.11.1,<6.12
+# Runtime dependencies are defined once in ../pyproject.toml.
+-e ..

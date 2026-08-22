@@ -5,6 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtWidgets import QMainWindow
 
+from app.gui_thread import assert_main_gui_thread
+
 
 class DockManager(QObject):
     """Own reusable dock panels without putting dock logic inside viewers."""
@@ -16,6 +18,7 @@ class DockManager(QObject):
         self._quality_dock = None
 
     def attach_main_window(self, main_window: QMainWindow) -> None:
+        assert_main_gui_thread("DockManager.attach_main_window")
         self._main_window = main_window
 
     def show_quality_report(
@@ -24,6 +27,7 @@ class DockManager(QObject):
         *,
         source_key: str,
     ) -> object | None:
+        assert_main_gui_thread("DockManager.show_quality_report/QDockWidget")
         if self._main_window is None:
             return None
         from widgets.quality_report_dock import QualityReportDock
@@ -41,3 +45,10 @@ class DockManager(QObject):
         self._quality_dock.show()
         self._quality_dock.raise_()
         return self._quality_dock
+
+    def set_docks_visible(self, visible: bool) -> None:
+        """Hide/show existing dock panels without destroying their session state."""
+
+        assert_main_gui_thread("DockManager.set_docks_visible/QDockWidget")
+        if self._quality_dock is not None:
+            self._quality_dock.setVisible(bool(visible))

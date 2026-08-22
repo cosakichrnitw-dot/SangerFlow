@@ -5,20 +5,25 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDockWidget,
-    QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from widgets.quality_metrics import (
+    DEFAULT_HQ_THRESHOLD as DEFAULT_STUDIO_HQ_THRESHOLD,
+    quality_percent_at_or_above,
+)
+
 
 class QualityReportDock(QDockWidget):
     """Dock panel that owns per-read visibility for chromatogram viewers."""
+
+    DEFAULT_HQ_THRESHOLD = DEFAULT_STUDIO_HQ_THRESHOLD
 
     def __init__(self, *, visibility_manager: object, parent: QWidget | None = None) -> None:
         super().__init__("Quality Report", parent)
@@ -37,6 +42,7 @@ class QualityReportDock(QDockWidget):
         self._reads: tuple[object, ...] = ()
         self._source_key = ""
         self._updating = False
+        self._hq_threshold = self.DEFAULT_HQ_THRESHOLD
         self._build_ui()
 
     @property
@@ -58,16 +64,6 @@ class QualityReportDock(QDockWidget):
         self._visibility_manager.initialize_source(source_key, read_ids)
         self.refresh()
 
-    def select_by_hq_threshold(self, threshold: float | None = None) -> None:
-        threshold_value = self._threshold.value() if threshold is None else float(threshold)
-        selected = tuple(
-            getattr(read_view, "read_id")
-            for read_view in self._reads
-            if getattr(read_view, "q20_rate", 0.0) >= threshold_value
-        )
-        self._visibility_manager.set_visible_ids(self._source_key, selected)
-        self.refresh()
-
     def refresh(self) -> None:
         visible_ids = set(
             self._visibility_manager.visible_ids(
@@ -75,13 +71,15 @@ class QualityReportDock(QDockWidget):
                 tuple(getattr(read_view, "read_id") for read_view in self._reads),
             )
         )
-        self._summary.setText(f"Reads: {len(self._reads)}")
+        self._summary.setText(
+            f"Reads: {len(self._reads)} • {len(visible_ids)} shown in chromatogram viewers"
+        )
         self._table.setRowCount(len(self._reads))
         self._updating = True
         try:
             for row, read_view in enumerate(self._reads):
                 read_id = getattr(read_view, "read_id")
-                selected = QTableWidgetItem("")
+                selected = QTableWidgetItem(read_id)
                 selected.setFlags(selected.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 selected.setCheckState(
                     Qt.CheckState.Checked
@@ -90,11 +88,11 @@ class QualityReportDock(QDockWidget):
                 )
                 self._table.setItem(row, 0, selected)
                 values = (
-                    read_id,
                     str(getattr(read_view, "sequence_length", 0)),
-                    f"{getattr(read_view, 'average_quality', 0.0):.1f}",
                     f"{getattr(read_view, 'q20_rate', 0.0):.1f}",
                     f"{getattr(read_view, 'q30_rate', 0.0):.1f}",
+                    f"{_rate_or_zero(read_view, 40):.1f}",
+                    f"{_rate_or_zero(read_view, self._hq_threshold):.1f}",
                     str(getattr(read_view, "trim_length", 0)),
                 )
                 for column, value in enumerate(values, start=1):
@@ -106,26 +104,31 @@ class QualityReportDock(QDockWidget):
         content = QWidget()
         layout = QVBoxLayout(content)
         self._summary = QLabel()
+        self._summary.setToolTip(
+            "Changing a check box only shows or hides that read in chromatogram "
+            "viewers. It does not delete the read or alter any Dataset."
+        )
         layout.addWidget(self._summary)
 
         controls = QWidget()
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.addWidget(QLabel("Q20 ≥"))
-        self._threshold = QDoubleSpinBox()
-        self._threshold.setRange(0.0, 100.0)
-        self._threshold.setValue(70.0)
-        controls_layout.addWidget(self._threshold)
-        select_button = QPushButton("Filter")
-        select_button.clicked.connect(self.select_by_hq_threshold)
-        controls_layout.addWidget(select_button)
+        controls_layout.addWidget(QLabel(f"HQ threshold: Q{self._hq_threshold}"))
         controls_layout.addStretch(1)
         layout.addWidget(controls)
 
         self._table = QTableWidget()
         self._table.setColumnCount(7)
         self._table.setHorizontalHeaderLabels(
-            ("Read", "Name", "Length", "MeanQ", "Q20", "Q30", "Trim")
+            ("Read", "Length", "Q20%", "Q30%", "Q40%", "HQ%", "Trim")
+        )
+        self._table.horizontalHeaderItem(0).setToolTip(
+            "Checked = included in the current chromatogram display only; "
+            "unchecked reads remain in the Project and all Dataset revisions."
+        )
+        self._table.setToolTip(
+            "Read visibility is a viewer setting. SangerFlow never removes a read "
+            "because of its quality score."
         )
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -144,3 +147,9 @@ class QualityReportDock(QDockWidget):
             getattr(self._reads[row], "read_id"),
             item.checkState() == Qt.CheckState.Checked,
         )
+
+
+def _rate_or_zero(read_view: object, threshold: float) -> float:
+    """Keep existing dock empty-quality rendering while sharing the metric."""
+
+    return quality_percent_at_or_above(read_view, threshold) or 0.0

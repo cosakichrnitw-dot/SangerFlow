@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from core.blast_filter import BlastResultSelection
+from core.lineage import LineageRelation, LineageRelationType, LineageSourceKind
 from core.project import DerivationType, Project
 from core.sequence_dataset import SequenceDataset
 from workflow.blast_selection_dataset import create_dataset_from_blast_selection
@@ -46,11 +47,28 @@ def add_blast_selection_dataset_to_project(
             "blast_result_id": dataset.metadata.get("blast_result_id"),
         }
     )
+    relations = [
+        LineageRelation(
+            LineageSourceKind.DATASET,
+            resolved_parent_id,
+            LineageRelationType.SUBSET_FROM_DATASET,
+        )
+    ]
+    blast_result_id = dataset.metadata.get("blast_result_id")
+    if isinstance(blast_result_id, str) and project.has_analysis_result(blast_result_id):
+        relations.append(
+            LineageRelation(
+                LineageSourceKind.ANALYSIS_RESULT,
+                blast_result_id,
+                LineageRelationType.SELECTED_FROM_BLAST,
+            )
+        )
     return project.add_dataset(
         dataset,
         parent_dataset_id=resolved_parent_id,
         derivation_type=DerivationType.SUBSET_FROM_DATASET,
         metadata=entry_metadata,
+        lineage_relations=tuple(relations),
     )
 
 

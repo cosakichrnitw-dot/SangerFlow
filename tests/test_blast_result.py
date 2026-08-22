@@ -21,6 +21,7 @@ def make_hit(query_id: str = "IK345", accession: str = "AB123456") -> BlastHit:
         evalue=1e-50,
         alignment_length=658,
         database="nt",
+        bit_score=501.5,
     )
 
 
@@ -29,6 +30,7 @@ class BlastResultTests(unittest.TestCase):
         hit = make_hit()
         self.assertEqual(hit.query_id, "IK345")
         self.assertEqual(hit.identity, 99.5)
+        self.assertEqual(hit.bit_score, 501.5)
         with self.assertRaisesRegex(ValueError, "identity"):
             BlastHit(**{**hit.__dict__, "identity": 101})
         with self.assertRaisesRegex(ValueError, "query_coverage"):
@@ -37,6 +39,8 @@ class BlastResultTests(unittest.TestCase):
             BlastHit(**{**hit.__dict__, "evalue": -0.1})
         with self.assertRaisesRegex(ValueError, "alignment_length"):
             BlastHit(**{**hit.__dict__, "alignment_length": 0})
+        with self.assertRaisesRegex(ValueError, "bit_score"):
+            BlastHit(**{**hit.__dict__, "bit_score": -1})
 
     def test_dataset_keeps_multiple_queries_hit_order_and_parent_metadata(self) -> None:
         metadata = {"analysis_type": "BLAST", "database_version": "test"}

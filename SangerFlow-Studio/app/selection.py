@@ -43,7 +43,8 @@ class StudioSelection:
         dataset = getattr(entry, "dataset", None)
         return cls(
             kind=SelectionKind.DATASET,
-            object_id=getattr(dataset, "dataset_id", None),
+            object_id=getattr(dataset, "dataset_id", None)
+            or getattr(dataset, "alignment_id", None),
             payload=entry,
         )
 

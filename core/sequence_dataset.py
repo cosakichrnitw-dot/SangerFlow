@@ -12,6 +12,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from core.lineage import RecordProvenance
+
 
 _VALID_SEQUENCE_SYMBOLS = frozenset("ACGTNRYSWKMBDHV-")
 
@@ -25,6 +27,7 @@ class SourceType(str, Enum):
     REVIEWED_CONSENSUS = "REVIEWED_CONSENSUS"
     IMPORTED_FASTA = "IMPORTED_FASTA"
     IMPORTED_ALIGNMENT = "IMPORTED_ALIGNMENT"
+    DERIVED = "DERIVED"
 
 
 def _freeze_metadata(value: Mapping[str, object] | None) -> Mapping[str, object]:
@@ -46,6 +49,7 @@ class SequenceRecord:
     description: str | None = None
     source_reference: object | None = None
     metadata: Mapping[str, object] | None = None
+    provenance: RecordProvenance | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.sequence_id, str) or not self.sequence_id.strip():
@@ -69,6 +73,12 @@ class SequenceRecord:
 
         object.__setattr__(self, "sequence", normalized_sequence)
         object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
+        provenance = self.provenance
+        if provenance is None:
+            provenance = RecordProvenance()
+        if not isinstance(provenance, RecordProvenance):
+            raise ValueError("provenance must be a RecordProvenance or None")
+        object.__setattr__(self, "provenance", provenance)
 
 
 @dataclass(frozen=True)

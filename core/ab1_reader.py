@@ -1,5 +1,7 @@
 from Bio import SeqIO
 
+from core.path_utils import source_filename
+
 from core.models import SangerRead
 
 
@@ -35,7 +37,7 @@ def read_ab1(filepath):
 
 
     sample = SangerRead(
-        filename=str(filepath).split("/")[-1],
+        filename=source_filename(filepath),
         sequence=sequence,
         quality=quality,
         traces=traces,

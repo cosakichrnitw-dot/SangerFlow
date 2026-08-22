@@ -6,18 +6,31 @@ from Bio import SeqIO
 import re
 import ssl
 import certifi
+import warnings
 
 DEFAULT_HITS = 3
 
 # ==================================================
-# Fix SSL certificate issue on macOS
+# Legacy TLS compatibility
 # ==================================================
 
-ssl._create_default_https_context = (
-    lambda: ssl.create_default_context(
+def enable_legacy_certifi_ssl_context() -> None:
+    """Opt in to the historical process-wide SSL workaround.
+
+    Studio uses ``workflow.ncbi_blast_service`` instead, which supplies a
+    certifi-backed context per request.  Importing this legacy module must not
+    silently mutate HTTPS behavior for unrelated application code.
+    """
+
+    warnings.warn(
+        "enable_legacy_certifi_ssl_context() changes Python's global HTTPS "
+        "context and is retained only for legacy callers.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    ssl._create_default_https_context = lambda: ssl.create_default_context(
         cafile=certifi.where()
     )
-)
 
 # ==================================================
 # Extract species name

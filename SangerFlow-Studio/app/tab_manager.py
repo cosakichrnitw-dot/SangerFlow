@@ -6,6 +6,8 @@ from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QMenu
 
 from app.app_state import AppState
+from app.gui_thread import assert_main_gui_thread
+from app.icon_registry import studio_icon
 from widgets.workspace_tabs import WorkspaceTabs
 
 
@@ -20,6 +22,7 @@ class TabManager(QObject):
         self._resource_to_viewer: dict[str, str] = {}
         self._tab_bar = self._tabs.tabBar()
         self._tabs.setTabsClosable(True)
+        self._tabs.hide_permanent_tab_close_buttons()
         self._tabs.tabCloseRequested.connect(self._close_tab_index)
         self._tab_bar.installEventFilter(self)
         self._tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -29,6 +32,7 @@ class TabManager(QObject):
     def open_viewer(self, viewer: object, *, resource_key: str | None = None) -> str:
         """Add or focus a viewer tab and return its stable viewer ID."""
 
+        assert_main_gui_thread("TabManager.open_viewer/QTabWidget.addTab")
         viewer_id = getattr(viewer, "viewer_id")
         if resource_key and resource_key in self._resource_to_viewer:
             existing_viewer_id = self._resource_to_viewer[resource_key]
@@ -43,6 +47,7 @@ class TabManager(QObject):
         if resource_key:
             self._resource_to_viewer[resource_key] = viewer_id
         index = self._tabs.addTab(viewer, title)
+        self._tabs.hide_permanent_tab_close_buttons()
         self._tabs.setCurrentIndex(index)
         self._connect_viewer_signals(viewer)
         self._state.viewer_opened.emit(viewer)
@@ -50,6 +55,7 @@ class TabManager(QObject):
         return viewer_id
 
     def focus_viewer(self, viewer_id: str) -> bool:
+        assert_main_gui_thread("TabManager.focus_viewer/QTabWidget.setCurrentIndex")
         for index in range(self._tabs.count()):
             widget = self._tabs.widget(index)
             if getattr(widget, "viewer_id", None) == viewer_id:
@@ -59,6 +65,7 @@ class TabManager(QObject):
         return False
 
     def close_viewer(self, viewer_id: str) -> bool:
+        assert_main_gui_thread("TabManager.close_viewer/QTabWidget.removeTab")
         viewer = self._viewers.get(viewer_id)
         if viewer is None:
             return False
@@ -66,18 +73,35 @@ class TabManager(QObject):
         if callable(close_viewer) and not close_viewer():
             return False
 
+        self._disconnect_viewer_signals(viewer)
+        self._viewers.pop(viewer_id, None)
+        for key, value in tuple(self._resource_to_viewer.items()):
+            if value == viewer_id:
+                self._resource_to_viewer.pop(key, None)
+
+        # Drop all active GUI action references before this QWidget leaves its
+        # tab.  currentChanged may select a permanent tab during removeTab().
+        if self._state.active_viewer is viewer:
+            self._state.set_active_viewer(None)
+
         for index in range(self._tabs.count()):
             if self._tabs.widget(index) is viewer:
                 self._tabs.removeTab(index)
                 break
 
-        self._viewers.pop(viewer_id, None)
-        for key, value in tuple(self._resource_to_viewer.items()):
-            if value == viewer_id:
-                self._resource_to_viewer.pop(key, None)
+        # removeTab() does not transfer ownership.  Detach first, then let Qt
+        # delete the no-longer-visible viewer on the event loop; this avoids
+        # hidden viewer widgets and their signal connections accumulating.
+        hide = getattr(viewer, "hide", None)
+        if callable(hide):
+            hide()
+        set_parent = getattr(viewer, "setParent", None)
+        if callable(set_parent):
+            set_parent(None)
+        delete_later = getattr(viewer, "deleteLater", None)
+        if callable(delete_later):
+            delete_later()
         self._state.viewer_closed.emit(viewer_id)
-        if self._state.active_viewer is viewer:
-            self._state.set_active_viewer(None)
         return True
 
     def close_others(self, viewer_id: str) -> None:
@@ -93,6 +117,14 @@ class TabManager(QObject):
         widget = self._tabs.currentWidget()
         return widget if getattr(widget, "viewer_id", None) else None
 
+    def viewer_for_resource_key(self, resource_key: str) -> object | None:
+        """Return an already-open viewer for a resource key, if one exists."""
+
+        viewer_id = self._resource_to_viewer.get(resource_key)
+        if viewer_id is None:
+            return None
+        return self._viewers.get(viewer_id)
+
     def viewer_ids(self) -> tuple[str, ...]:
         return tuple(self._viewers)
 
@@ -101,7 +133,17 @@ class TabManager(QObject):
         if signal is not None:
             signal.connect(self._state.set_selected_item)
 
+    def _disconnect_viewer_signals(self, viewer: object) -> None:
+        signal = getattr(viewer, "selection_changed", None)
+        if signal is not None:
+            try:
+                signal.disconnect(self._state.set_selected_item)
+            except (RuntimeError, TypeError):
+                # A viewer without the connection is already safe to close.
+                pass
+
     def _active_tab_changed(self, _index: int) -> None:
+        assert_main_gui_thread("TabManager._active_tab_changed")
         viewer = self.active_viewer()
         self._state.set_active_viewer(viewer)
 
@@ -120,9 +162,9 @@ class TabManager(QObject):
         if viewer_id is None:
             return
         menu = QMenu(self._tabs)
-        close_action = menu.addAction("Close")
-        close_others_action = menu.addAction("Close Others")
-        close_all_action = menu.addAction("Close All")
+        close_action = menu.addAction(studio_icon("close"), "Close")
+        close_others_action = menu.addAction(studio_icon("close"), "Close Others")
+        close_all_action = menu.addAction(studio_icon("close"), "Close All")
         action = menu.exec(self._tabs.mapToGlobal(position))
         if action is close_action:
             self.close_viewer(viewer_id)

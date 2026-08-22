@@ -15,6 +15,7 @@ from core.sequence_dataset import SequenceDataset, SourceType
 from persistence.project_bundle import (
     PROJECT_BUNDLE_SCHEMA_VERSION,
     ProjectBundleError,
+    ProjectBundleOptions,
     load_project_bundle,
     save_project_bundle,
 )
@@ -87,6 +88,18 @@ class ProjectBundleTests(unittest.TestCase):
                 self.assertTrue(loaded.project.has_analysis_result("blast-001"))
             finally:
                 loaded.cleanup()
+
+    def test_raw_data_embedding_option_is_explicitly_rejected(self) -> None:
+        """Avoid falsely claiming that portable bundles contain AB1 payloads."""
+
+        with TemporaryDirectory() as directory:
+            project, _result = make_project_and_result()
+            with self.assertRaisesRegex(ProjectBundleError, "include_raw_data is not implemented"):
+                save_project_bundle(
+                    project,
+                    Path(directory) / "raw-requested.sangerflow",
+                    options=ProjectBundleOptions(include_raw_data=True),
+                )
 
     def test_rejects_corrupt_missing_project_and_unsupported_schema_bundles(self) -> None:
         with TemporaryDirectory() as directory:

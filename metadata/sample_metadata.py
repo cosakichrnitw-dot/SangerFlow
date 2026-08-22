@@ -13,9 +13,11 @@ from typing import Mapping
 from openpyxl import load_workbook
 
 from core.sequence_dataset import SequenceDataset, SequenceRecord
+from core.lineage import RecordProvenance, RecordRef
 
 
 _SAMPLE_ID_COLUMN = "sample_id"
+_SOURCE_BATCH_COLUMN = "source_batch"
 
 
 def _freeze_metadata(value: Mapping[str, object] | None) -> Mapping[str, object]:
@@ -53,14 +55,12 @@ class SampleMetadataTable:
             raise ValueError("sample metadata table must contain at least one row")
         if any(not isinstance(record, SampleMetadataRecord) for record in records):
             raise ValueError("records must contain SampleMetadataRecord values")
-        sample_ids = tuple(record.sample_id for record in records)
-        if len(set(sample_ids)) != len(sample_ids):
-            raise ValueError("duplicate Sample_ID values are not allowed")
         if not isinstance(self.source_filepath, str) or not self.source_filepath:
             raise ValueError("source_filepath must be a non-empty string")
         columns = tuple(self.columns)
         if _SAMPLE_ID_COLUMN not in columns:
             raise ValueError("metadata table requires a Sample_ID column")
+        _validate_metadata_row_keys(records, columns)
         object.__setattr__(self, "records", records)
         object.__setattr__(self, "columns", columns)
 
@@ -102,23 +102,21 @@ def merge_sample_metadata(
         raise ValueError("dataset must be a SequenceDataset")
     if not isinstance(metadata_table, SampleMetadataTable):
         raise ValueError("metadata_table must be a SampleMetadataTable")
-    unmatched = tuple(
-        sample_id for sample_id in metadata_table.sample_ids if sample_id not in dataset.sequence_ids
-    )
-    if unmatched:
-        raise ValueError("metadata contains unmatched Sample_ID values: " + ", ".join(unmatched))
-
-    metadata_by_sample = {
-        metadata_record.sample_id: metadata_record.metadata
-        for metadata_record in metadata_table.records
-    }
+    matched = _resolve_metadata_matches((dataset,), metadata_table)
+    metadata_by_record = {record_key: metadata for record_key, metadata in matched.items()}
     records = tuple(
         SequenceRecord(
             sequence_id=record.sequence_id,
             sequence=record.sequence,
             description=record.description,
             source_reference=record.source_reference,
-            metadata={**record.metadata, **metadata_by_sample.get(record.sequence_id, {})},
+            metadata=_merge_record_metadata(
+                record.metadata,
+                metadata_by_record.get((dataset.dataset_id, record.sequence_id), {}),
+            ),
+            provenance=RecordProvenance(
+                (RecordRef(dataset.dataset_id, record.sequence_id),)
+            ),
         )
         for record in dataset.records
     )
@@ -137,6 +135,145 @@ def merge_sample_metadata(
         records=records,
         metadata=dataset_metadata,
     )
+
+
+def merge_sample_metadata_for_datasets(
+    datasets: tuple[SequenceDataset, ...],
+    metadata_table: SampleMetadataTable,
+) -> tuple[SequenceDataset, ...]:
+    """Merge one metadata file across an explicit multi-Dataset scope.
+
+    This preserves each Dataset and record identity.  ``Source_Batch`` is only
+    a matching discriminator and is never imported over a record's provenance
+    metadata.
+    """
+    datasets = tuple(datasets)
+    if not datasets or any(not isinstance(dataset, SequenceDataset) for dataset in datasets):
+        raise ValueError("datasets must contain at least one SequenceDataset")
+    matched = _resolve_metadata_matches(datasets, metadata_table)
+    merged: list[SequenceDataset] = []
+    for dataset in datasets:
+        records = tuple(
+            SequenceRecord(
+                sequence_id=record.sequence_id,
+                sequence=record.sequence,
+                description=record.description,
+                source_reference=record.source_reference,
+                metadata=_merge_record_metadata(
+                    record.metadata,
+                    matched.get((dataset.dataset_id, record.sequence_id), {}),
+                ),
+                provenance=RecordProvenance((RecordRef(dataset.dataset_id, record.sequence_id),)),
+            )
+            for record in dataset.records
+        )
+        merged.append(SequenceDataset(
+            dataset_id=dataset.dataset_id,
+            name=dataset.name,
+            source_type=dataset.source_type,
+            records=records,
+            metadata={
+                **dict(dataset.metadata),
+                "sample_metadata_merged": True,
+                "sample_metadata_source": metadata_table.source_filepath,
+                "sample_metadata_matched_count": sum(
+                    1 for key in matched if key[0] == dataset.dataset_id
+                ),
+            },
+        ))
+    return tuple(merged)
+
+
+def _merge_record_metadata(
+    existing: Mapping[str, object],
+    imported: Mapping[str, object],
+) -> dict[str, object]:
+    """Merge imported canonical keys without retaining case-only duplicates.
+
+    Import headers are intentionally normalized (``Location`` -> ``location``).
+    Replace an existing key that differs only by case/spacing so Project-wide
+    discovery and filtering have one authoritative value per metadata field.
+    """
+
+    merged = dict(existing)
+    imported = {
+        key: value for key, value in imported.items()
+        if _normalize_column_name(key) != _SOURCE_BATCH_COLUMN
+    }
+    imported_keys = {_normalize_column_name(key) for key in imported}
+    for key in tuple(merged):
+        if _normalize_column_name(key) in imported_keys:
+            del merged[key]
+    merged.update(imported)
+    return merged
+
+
+def _validate_metadata_row_keys(
+    records: tuple[SampleMetadataRecord, ...],
+    columns: tuple[str, ...],
+) -> None:
+    by_sample: dict[str, list[SampleMetadataRecord]] = {}
+    for record in records:
+        by_sample.setdefault(record.sample_id, []).append(record)
+    duplicated = {sample_id: rows for sample_id, rows in by_sample.items() if len(rows) > 1}
+    if not duplicated:
+        return
+    if _SOURCE_BATCH_COLUMN not in columns:
+        raise ValueError("duplicate Sample_ID values are not allowed: " + ", ".join(sorted(duplicated)))
+    duplicate_keys: list[str] = []
+    missing_batches: list[str] = []
+    for sample_id, rows in duplicated.items():
+        batches = [str(row.metadata.get(_SOURCE_BATCH_COLUMN, "")).strip() for row in rows]
+        if not all(batches):
+            missing_batches.append(sample_id)
+        elif len(set(batches)) != len(batches):
+            duplicate_keys.append(sample_id)
+    if missing_batches:
+        raise ValueError("duplicate Sample_ID values require Source_Batch: " + ", ".join(sorted(missing_batches)))
+    if duplicate_keys:
+        raise ValueError("duplicate Sample_ID + Source_Batch values are not allowed: " + ", ".join(sorted(duplicate_keys)))
+
+
+def _resolve_metadata_matches(
+    datasets: tuple[SequenceDataset, ...],
+    metadata_table: SampleMetadataTable,
+) -> dict[tuple[str, str], Mapping[str, object]]:
+    candidates: dict[str, list[tuple[SequenceDataset, SequenceRecord]]] = {}
+    for dataset in datasets:
+        for record in dataset.records:
+            candidates.setdefault(record.sequence_id, []).append((dataset, record))
+    matches: dict[tuple[str, str], Mapping[str, object]] = {}
+    unmatched: list[str] = []
+    ambiguous: list[str] = []
+    for metadata_record in metadata_table.records:
+        options = candidates.get(metadata_record.sample_id, [])
+        if not options:
+            unmatched.append(metadata_record.sample_id)
+            continue
+        if len(options) == 1:
+            key = (options[0][0].dataset_id, options[0][1].sequence_id)
+        else:
+            if _SOURCE_BATCH_COLUMN not in metadata_table.columns:
+                ambiguous.append(metadata_record.sample_id)
+                continue
+            batch = str(metadata_record.metadata.get(_SOURCE_BATCH_COLUMN, "")).strip()
+            batch_options = [
+                option for option in options
+                if str(option[1].metadata.get(_SOURCE_BATCH_COLUMN, "")).strip() == batch
+            ]
+            if len(batch_options) != 1:
+                (unmatched if not batch_options else ambiguous).append(metadata_record.sample_id)
+                continue
+            key = (batch_options[0][0].dataset_id, batch_options[0][1].sequence_id)
+        if key in matches:
+            ambiguous.append(metadata_record.sample_id)
+            continue
+        matches[key] = metadata_record.metadata
+    if unmatched:
+        raise ValueError("metadata contains unmatched Sample_ID/Source_Batch: " + ", ".join(sorted(set(unmatched))))
+    if ambiguous:
+        raise ValueError("ambiguous metadata match for Sample_ID: " + ", ".join(sorted(set(ambiguous))))
+    return matches
 
 
 def _validate_input_path(filepath: str | Path) -> Path:

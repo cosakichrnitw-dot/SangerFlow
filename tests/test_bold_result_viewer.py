@@ -7,6 +7,8 @@ import os
 import tkinter as tk
 import unittest
 
+import pytest
+
 from core.bold_filter import BoldResultSelection
 from core.bold_result import BoldHit, BoldResultDataset
 from gui.bold_result_view_model import BoldResultSummaryRow, BoldResultViewModel
@@ -68,13 +70,15 @@ class BoldResultViewModelTests(unittest.TestCase):
             result.name = "changed"  # type: ignore[misc]
 
 
+@pytest.mark.legacy_tk
+@unittest.skipUnless(
+    os.environ.get("SANGERFLOW_RUN_LEGACY_TK") == "1",
+    "legacy Tkinter native tests require SANGERFLOW_RUN_LEGACY_TK=1",
+)
 class BoldResultViewerTests(unittest.TestCase):
     def test_gui_creation_and_query_selection_when_tk_is_available(self) -> None:
         # In the headless macOS test runner, creating and tearing down a Tk
-        # native window can abort the interpreter after the test completes.
-        # Keep this as a real Tk smoke test where a display server is exposed.
-        if not os.environ.get("DISPLAY"):
-            self.skipTest("Tk display unavailable")
+        # This explicit native tier can run on macOS Aqua as well as X11.
         try:
             root = tk.Tk()
         except tk.TclError as error:

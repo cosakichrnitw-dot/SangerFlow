@@ -7,6 +7,7 @@ import unittest
 
 from core.blast_filter import BlastResultSelection
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
+from core.lineage import RecordProvenance, RecordRef
 from workflow.blast_selection_dataset import create_dataset_from_blast_selection
 
 
@@ -46,6 +47,10 @@ class BlastSelectionDatasetTests(unittest.TestCase):
         self.assertEqual(subset.metadata["derived_from"], "BLAST_SELECTION")
         self.assertEqual(subset.metadata["blast_result_id"], "coi-blast")
         self.assertEqual(subset.metadata["selected_query_count"], 2)
+        self.assertEqual(
+            subset.get_record("IK347").provenance,
+            RecordProvenance((RecordRef("coi-trimmed", "IK347"),)),
+        )
         self.assertEqual(subset.metadata["population"], "Central Java")
         with self.assertRaises(TypeError):
             subset.metadata["population"] = "changed"  # type: ignore[index]

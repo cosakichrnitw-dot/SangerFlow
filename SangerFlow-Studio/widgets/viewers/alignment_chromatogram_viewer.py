@@ -20,27 +20,33 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from services.application_settings import resolve_studio_mafft_executable
 
 from app.selection import SelectionKind, StudioSelection
 from core.alignment_mapper import alignment_to_trace_positions, trace_to_alignment_positions
 from core.chromatogram_alignment import align_reads
 from core.consensus import build_quality_consensus
 from core.models import SangerRead
+from widgets.font_utils import fixed_width_font
 from widgets.viewers.base_viewer import BaseViewer
+from widgets.viewers.alignment_trace_geometry import (
+    AlignmentTracePoint as _AlignmentTracePoint,
+    alignment_column_x as _shared_alignment_column_x,
+    peak_to_peak_trace_segments as _shared_peak_to_peak_trace_segments,
+    raw_trace_path as _shared_raw_trace_path,
+)
+from widgets.viewers.consensus_review_viewer import ConsensusReviewViewer
 from widgets.viewers.viewer_actions import ViewerAction
 
 
-NAME_WIDTH = 210
-BASE_WIDTH = 28
-ROW_HEIGHT = 200
-CONSENSUS_Y = 60
-FIRST_READ_Y = 170
-BASE_Y_OFFSET = -35
-TRACE_SCALE = 0.05
+NAME_WIDTH = 105
+BASE_WIDTH = 16
+ROW_HEIGHT = 95
+CONSENSUS_Y = 38
+FIRST_READ_Y = 92
+BASE_Y_OFFSET = -18
+ALIGNMENT_TRACE_GAIN = 0.022
 RULER_Y = 18
-LOCAL_TRACE_WINDOW = 20
-LOCAL_TRACE_COLUMN_FRACTION = 0.9
-LOCAL_TRACE_SAMPLE_STEP = 2
 
 _TRACE_COLORS = {
     "A": QColor("green"),
@@ -64,15 +70,25 @@ class AlignmentChromatogramViewer(BaseViewer):
         reads: Iterable[SangerRead],
         *,
         alignment: object | None = None,
+        alignment_dataset: object | None = None,
         context: object | None = None,
         source_object_id: str | None = None,
+        initial_alignment_column: int | None = None,
     ) -> None:
         self._reads = tuple(reads)
+        self._alignment_dataset = alignment_dataset
         self._context = context
         self._visibility_source_key = source_object_id or f"alignment-chromatogram:{id(self)}"
         self._visibility_manager = getattr(context, "read_visibility_manager", None)
-        self._alignment = alignment if alignment is not None else align_reads(self._reads)
-        self._maps = _build_alignment_maps(self._alignment, self._reads)
+        self._visibility_connected = False
+        self._alignment = (
+            alignment
+            if alignment is not None
+            else align_reads(self._reads, mafft_executable=resolve_studio_mafft_executable())
+        )
+        self._maps = _build_alignment_maps(
+            self._alignment, self._reads, alignment_dataset=self._alignment_dataset
+        )
         self._reverse_maps = {
             sample_name: trace_to_alignment_positions(mapping)
             for sample_name, mapping in self._maps.items()
@@ -83,6 +99,9 @@ class AlignmentChromatogramViewer(BaseViewer):
         self._selected_cell: tuple[str, int] | None = None
         self._selected_trace_position: int | None = None
         self._show_trim_region = False
+        # Quality is evidence, not a second alignment.  It is rendered only
+        # where the existing alignment-to-trace mapping identifies a real base.
+        self._show_quality = True
         self._visible_read_ids = {read.filename for read in self._reads}
         if self._visibility_manager is not None:
             read_ids = tuple(read.filename for read in self._reads)
@@ -91,8 +110,10 @@ class AlignmentChromatogramViewer(BaseViewer):
                 self._visibility_manager.visible_ids(self._visibility_source_key, read_ids)
             )
             self._visibility_manager.visibility_changed.connect(self._visibility_changed)
+            self._visibility_connected = True
         self._x_offset = 0
         self._y_offset = 0
+        self._initial_alignment_column = initial_alignment_column
         self._action_provider = AlignmentChromatogramActionProvider()
         super().__init__(
             viewer_id=f"alignment-chromatogram-{_safe_identifier(source_object_id) if source_object_id else id(self)}",
@@ -101,6 +122,19 @@ class AlignmentChromatogramViewer(BaseViewer):
             source_object_id=source_object_id,
         )
         self._build_ui()
+        if self._initial_alignment_column is not None:
+            self.jump_to_alignment_column(self._initial_alignment_column)
+
+    def close_viewer(self) -> bool:
+        self._disconnect_visibility_manager()
+        return super().close_viewer()
+
+    def _disconnect_visibility_manager(self, *_args: object) -> None:
+        """Release the long-lived visibility signal before this viewer dies."""
+
+        if self._visibility_connected and self._visibility_manager is not None:
+            self._visibility_manager.visibility_changed.disconnect(self._visibility_changed)
+        self._visibility_connected = False
 
     @property
     def reads(self) -> tuple[SangerRead, ...]:
@@ -127,18 +161,22 @@ class AlignmentChromatogramViewer(BaseViewer):
         return self._show_trim_region
 
     @property
+    def show_quality(self) -> bool:
+        """Whether mapped AB1 base-quality evidence is visible."""
+
+        return self._show_quality
+
+    @property
     def action_providers(self) -> tuple[object, ...]:
         return (self._action_provider,)
 
     @property
     def supported_actions(self) -> tuple[str, ...]:
         return (
-            "alignment_chromatogram.align",
             "alignment_chromatogram.toggle_trim_region",
+            "alignment_chromatogram.toggle_quality",
             "alignment_chromatogram.open_quality_report",
-            "alignment_chromatogram.build_consensus",
-            "alignment_chromatogram.export",
-            "alignment_chromatogram.run_blast",
+            "alignment_chromatogram.review_consensus",
         )
 
     def alignment_column_to_trace_position(
@@ -192,6 +230,14 @@ class AlignmentChromatogramViewer(BaseViewer):
         )
         return sample_name, alignment_column, base, trace_position
 
+    def jump_to_alignment_column(self, alignment_column: int) -> None:
+        """Center an alignment column without changing read selection."""
+
+        if alignment_column < 1 or alignment_column > _alignment_length(self._alignment):
+            return
+        self._center_on_alignment_column(alignment_column, 0)
+        self._canvas_widget.update()
+
     def select_trace_position(
         self,
         sample_name: str,
@@ -210,8 +256,13 @@ class AlignmentChromatogramViewer(BaseViewer):
     def align(self) -> None:
         """Rerun the existing MAFFT alignment path for the current reads."""
 
-        self._alignment = align_reads(self._reads)
-        self._maps = _build_alignment_maps(self._alignment, self._reads)
+        self._alignment = align_reads(
+            self._reads,
+            mafft_executable=resolve_studio_mafft_executable(),
+        )
+        self._maps = _build_alignment_maps(
+            self._alignment, self._reads, alignment_dataset=self._alignment_dataset
+        )
         self._reverse_maps = {
             sample_name: trace_to_alignment_positions(mapping)
             for sample_name, mapping in self._maps.items()
@@ -235,6 +286,14 @@ class AlignmentChromatogramViewer(BaseViewer):
         state = "shown" if self._show_trim_region else "hidden"
         self.status_message_changed.emit(f"Trim region overlay {state}.")
 
+    def toggle_quality(self) -> None:
+        """Toggle base-quality evidence without altering alignment data."""
+
+        self._show_quality = not self._show_quality
+        self._canvas_widget.update()
+        state = "shown" if self._show_quality else "hidden"
+        self.status_message_changed.emit(f"Aligned base-quality evidence {state}.")
+
     def open_quality_report(self) -> object | None:
         context = self._context
         dock_manager = getattr(context, "dock_manager", None)
@@ -253,6 +312,29 @@ class AlignmentChromatogramViewer(BaseViewer):
     def request_consensus(self) -> None:
         self.open_related_requested.emit(
             {"action": "CONSENSUS", "viewer": self, "reads": self._reads}
+        )
+
+    def review_consensus(self) -> object | None:
+        if self._alignment_dataset is None:
+            self.status_message_changed.emit(
+                "Consensus Review requires an AlignmentDataset source."
+            )
+            return None
+        context = self._context
+        tab_manager = getattr(context, "tab_manager", None)
+        if tab_manager is None:
+            self.open_related_requested.emit(
+                {
+                    "action": "REVIEW_CONSENSUS",
+                    "viewer": self,
+                    "alignment_dataset": self._alignment_dataset,
+                }
+            )
+            return None
+        viewer = ConsensusReviewViewer(self._alignment_dataset, context=context)
+        return tab_manager.open_viewer(
+            viewer,
+            resource_key=f"consensus-review:{self._alignment_dataset.alignment_id}",
         )
 
     def request_export(self) -> None:
@@ -341,7 +423,7 @@ class AlignmentChromatogramViewer(BaseViewer):
         return FIRST_READ_Y + len(self._visible_records()) * ROW_HEIGHT + 80
 
     def _center_on_alignment_column(self, alignment_column: int, row_index: int) -> None:
-        column_x = (alignment_column - 1) * BASE_WIDTH
+        column_x = _alignment_column_x(alignment_column) - NAME_WIDTH
         plot_width = max(1, self._canvas_widget.width() - NAME_WIDTH)
         self._horizontal_scrollbar.setValue(
             max(0, int(column_x - plot_width / 2))
@@ -358,10 +440,11 @@ class AlignmentChromatogramViewer(BaseViewer):
         base: str,
         trace_position: int | None,
     ) -> None:
+        base_label = "GAP" if base == "-" else base
         extra = "    Gap/no trace coordinate" if trace_position is None else ""
         self._status.setText(
             f"Sample: {sample_name}    Alignment column: {alignment_column}    "
-            f"Base: {base}    Trim trace position: {_dash(trace_position)}{extra}"
+            f"Base: {base_label}    Trim trace position: {_dash(trace_position)}{extra}"
         )
 
     def _records(self) -> tuple[object, ...]:
@@ -438,13 +521,17 @@ class AlignmentChromatogramCanvasWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
-        painter.fillRect(event.rect(), QColor("white"))
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setFont(QFont("Menlo", 10))
-        self._draw_ruler(painter)
-        self._draw_selected_column(painter)
-        self._draw_consensus(painter)
-        self._draw_reads(painter)
+        try:
+            painter.fillRect(event.rect(), QColor("white"))
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setFont(fixed_width_font(8))
+            self._draw_ruler(painter)
+            self._draw_selected_column(painter)
+            self._draw_consensus(painter)
+            self._draw_reads(painter)
+        finally:
+            if painter.isActive():
+                painter.end()
 
     def _draw_ruler(self, painter: QPainter) -> None:
         painter.save()
@@ -482,7 +569,7 @@ class AlignmentChromatogramCanvasWidget(QWidget):
         if y < -30 or y > self.height() + 30:
             return
         painter.save()
-        painter.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        painter.setFont(fixed_width_font(8, QFont.Weight.Bold))
         painter.setPen(QPen(QColor("#222222")))
         painter.drawText(5, int(y), "Consensus")
         painter.setClipRect(self._plot_rect())
@@ -503,10 +590,53 @@ class AlignmentChromatogramCanvasWidget(QWidget):
             mapping = self._viewer.maps.get(sample_name, {})
             read = self._viewer._read_by_name(sample_name)
             self._draw_read_name(painter, sample_name, y_base, row_index)
+            if self._viewer.show_quality:
+                self._draw_quality_background(
+                    painter, read, mapping, y_base, first_col, last_col
+                )
             if self._viewer.show_trim_region:
                 self._draw_trim_region(painter, read, mapping, y_base)
             self._draw_trace(painter, read, mapping, y_base, first_col, last_col)
             self._draw_aligned_bases(painter, str(record.seq), y_base, first_col, last_col)
+
+    def _draw_quality_background(
+        self,
+        painter: QPainter,
+        read: SangerRead,
+        mapping: dict[int, int | None],
+        y_base: float,
+        first_col: int,
+        last_col: int,
+    ) -> None:
+        """Render quality behind the trace in alignment-column coordinates.
+
+        The height uses the same Q0--Q40 cap as Main Chromatogram Viewer.
+        A gap has no trace position, hence no quality block: missing evidence is
+        never fabricated merely because the alignment reserves a gap column.
+        """
+
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setClipRect(self._plot_rect())
+        maximum_height = 38.0
+        for column in range(first_col, last_col + 1):
+            trace_position = mapping.get(column)
+            if trace_position is None:
+                continue
+            quality = _quality_for_trace_position(read, int(trace_position))
+            if quality is None:
+                continue
+            height = min(max(float(quality), 0.0), 40.0) / 40.0 * maximum_height
+            if height <= 0:
+                continue
+            x = self._viewport_x_for_column(column) - BASE_WIDTH / 2
+            painter.fillRect(
+                QRectF(x, y_base - height, BASE_WIDTH, height),
+                # Main Chromatogram Viewer uses this same pale-blue quality
+                # fill; alignment review only changes its X coordinate system.
+                QColor("#EEF9FF"),
+            )
+        painter.restore()
 
     def _draw_read_name(
         self,
@@ -518,14 +648,15 @@ class AlignmentChromatogramCanvasWidget(QWidget):
         painter.save()
         if self._viewer.selected_cell and self._viewer.selected_cell[0] == sample_name:
             painter.fillRect(
-                QRectF(0, y_base - 62, NAME_WIDTH - 8, 78),
+                QRectF(0, y_base - 32, NAME_WIDTH - 8, 40),
                 QColor("#E8F1FF"),
             )
-        painter.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        painter.setFont(fixed_width_font(8, QFont.Weight.Bold))
         painter.setPen(QPen(QColor("#222222")))
         painter.drawText(5, int(y_base), sample_name)
         painter.setPen(QPen(QColor("#DDDDDD")))
-        painter.drawLine(0, int(FIRST_READ_Y + row_index * ROW_HEIGHT + 30 - self._viewer._y_offset), self.width(), int(FIRST_READ_Y + row_index * ROW_HEIGHT + 30 - self._viewer._y_offset))
+        separator_y = FIRST_READ_Y + row_index * ROW_HEIGHT + 14 - self._viewer._y_offset
+        painter.drawLine(0, int(separator_y), self.width(), int(separator_y))
         painter.restore()
 
     def _draw_aligned_bases(
@@ -537,7 +668,7 @@ class AlignmentChromatogramCanvasWidget(QWidget):
         last_col: int,
     ) -> None:
         painter.save()
-        painter.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        painter.setFont(fixed_width_font(8, QFont.Weight.Bold))
         for column in range(first_col, min(last_col, len(sequence)) + 1):
             base = sequence[column - 1]
             self._draw_base(painter, base, column, y_base + BASE_Y_OFFSET, bold=True)
@@ -560,11 +691,16 @@ class AlignmentChromatogramCanvasWidget(QWidget):
         for base, color in _TRACE_COLORS.items():
             trace = traces.get(base, ())
             painter.setPen(QPen(color, 1.3))
-            for segment in _local_trace_segments(mapping, trace, first_col=first_col, last_col=last_col):
+            for segment in _peak_to_peak_trace_segments(
+                mapping,
+                trace,
+                first_col=first_col,
+                last_col=last_col,
+            ):
                 if len(segment) < 2:
                     continue
                 painter.drawPath(
-                    _smoothed_trace_path(
+                    _raw_trace_path(
                         segment,
                         x_offset=self._viewer._x_offset,
                         y_base=y_base,
@@ -633,7 +769,7 @@ class AlignmentChromatogramCanvasWidget(QWidget):
         painter.setPen(QPen(color))
         x = self._viewport_x_for_column(alignment_column)
         painter.drawText(
-            QRectF(x - BASE_WIDTH / 2, y - 12, BASE_WIDTH, 16),
+            QRectF(x - BASE_WIDTH / 2, y - 10, BASE_WIDTH, 14),
             Qt.AlignmentFlag.AlignCenter,
             base,
         )
@@ -676,40 +812,39 @@ class AlignmentChromatogramActionProvider:
     def actions_for(self, viewer: object) -> tuple[ViewerAction, ...]:
         return (
             ViewerAction(
-                action_id="alignment_chromatogram.align",
-                label="Align",
-                tooltip="Rerun existing MAFFT alignment for the loaded reads",
-                callback=getattr(viewer, "align"),
-            ),
-            ViewerAction(
                 action_id="alignment_chromatogram.toggle_trim_region",
                 label="Show Trim",
                 tooltip="Toggle trim overlay in the aligned chromatogram view",
                 callback=getattr(viewer, "toggle_trim_region"),
+                toolbar=True,
+                menu_group="Align",
+                priority=100,
+            ),
+            ViewerAction(
+                action_id="alignment_chromatogram.toggle_quality",
+                label="Show Quality",
+                tooltip="Toggle mapped AB1 base-quality evidence",
+                callback=getattr(viewer, "toggle_quality"),
+                menu_group="Align",
+                priority=95,
             ),
             ViewerAction(
                 action_id="alignment_chromatogram.open_quality_report",
                 label="Quality Report",
                 tooltip="Open quality report for aligned chromatogram reads",
                 callback=getattr(viewer, "open_quality_report"),
+                toolbar=True,
+                menu_group="Align",
+                priority=90,
             ),
             ViewerAction(
-                action_id="alignment_chromatogram.build_consensus",
-                label="Consensus",
-                tooltip="Request consensus workflow for these reads",
-                callback=getattr(viewer, "request_consensus"),
-            ),
-            ViewerAction(
-                action_id="alignment_chromatogram.export",
-                label="Export",
-                tooltip="Request export for alignment/chromatogram review data",
-                callback=getattr(viewer, "request_export"),
-            ),
-            ViewerAction(
-                action_id="alignment_chromatogram.run_blast",
-                label="BLAST",
-                tooltip="Request BLAST workflow for these reads",
-                callback=getattr(viewer, "request_blast"),
+                action_id="alignment_chromatogram.review_consensus",
+                label="Review Consensus",
+                tooltip="Open Studio consensus review for this AlignmentDataset",
+                callback=getattr(viewer, "review_consensus"),
+                enabled=getattr(viewer, "_alignment_dataset", None) is not None,
+                toolbar_group="More",
+                menu_group="Align",
             ),
         )
 
@@ -717,13 +852,57 @@ class AlignmentChromatogramActionProvider:
 def _build_alignment_maps(
     alignment: object,
     reads: tuple[SangerRead, ...],
+    *,
+    alignment_dataset: object | None = None,
 ) -> dict[str, dict[int, int | None]]:
+    """Map display columns to source trace positions without shifting deletions.
+
+    New edited AlignmentDatasets persist ``source_alignment_columns`` per
+    record.  The fallback also understands the already-persisted
+    ``original_aligned_sequence`` plus ``deleted_columns`` metadata created by
+    the first v1.0 structural-delete implementation.
+    """
+
     maps: dict[str, dict[int, int | None]] = {}
     by_name = {read.filename: read for read in reads}
+    dataset_records: dict[str, object] = {}
+    dataset_metadata = dict(getattr(alignment_dataset, "metadata", {}) or {})
+    for dataset_record in tuple(getattr(alignment_dataset, "records", ()) or ()):
+        metadata = dict(getattr(dataset_record, "metadata", {}) or {})
+        dataset_records[str(getattr(dataset_record, "record_id", ""))] = dataset_record
+        dataset_records[str(metadata.get("source_filename", ""))] = dataset_record
     for record in alignment:
         read = by_name.get(record.id)
-        if read is not None:
-            maps[record.id] = alignment_to_trace_positions(str(record.seq), read)
+        if read is None:
+            continue
+        dataset_record = dataset_records.get(str(record.id))
+        metadata = dict(getattr(dataset_record, "metadata", {}) or {})
+        current_sequence = str(record.seq)
+        root_sequence = str(metadata.get("source_alignment_sequence", ""))
+        source_columns = tuple(metadata.get("source_alignment_columns", ()) or ())
+        if root_sequence and len(source_columns) == len(current_sequence):
+            root_map = alignment_to_trace_positions(root_sequence, read)
+            maps[record.id] = {
+                current_column: root_map.get(int(source_column) + 1)
+                for current_column, source_column in enumerate(source_columns, start=1)
+            }
+            continue
+        original_sequence = str(metadata.get("original_aligned_sequence", ""))
+        deleted_columns = tuple(dataset_metadata.get("deleted_columns", ()) or ())
+        if original_sequence and deleted_columns:
+            retained_columns = tuple(
+                index
+                for index in range(len(original_sequence))
+                if index not in {int(value) for value in deleted_columns}
+            )
+            if len(retained_columns) == len(current_sequence):
+                root_map = alignment_to_trace_positions(original_sequence, read)
+                maps[record.id] = {
+                    current_column: root_map.get(source_column + 1)
+                    for current_column, source_column in enumerate(retained_columns, start=1)
+                }
+                continue
+        maps[record.id] = alignment_to_trace_positions(current_sequence, read)
     return maps
 
 
@@ -803,116 +982,46 @@ def _trace_segments(
     return tuple(segments)
 
 
-@dataclass(frozen=True)
-class _LocalTracePoint:
-    x: float
-    signal: int
-    alignment_column: int
-    trace_position: int
-
-
-def _local_trace_segments(
+def _peak_to_peak_trace_segments(
     mapping: dict[int, int | None],
     trace: tuple[int, ...],
     *,
     first_col: int = 1,
     last_col: int | None = None,
-    window: int = LOCAL_TRACE_WINDOW,
-) -> tuple[tuple[_LocalTracePoint, ...], ...]:
-    """Return local peak-neighborhood trace segments in alignment coordinates.
+) -> tuple[tuple[_AlignmentTracePoint, ...], ...]:
+    """Return raw peak-to-peak trace samples in alignment-column coordinates.
 
-    This keeps the Tkinter alignment-column contract, but draws the trace
-    samples around each peak inside the fixed-width alignment column instead of
-    plotting only the peak sample.  Each alignment column is returned as an
-    independent path so gap columns and column boundaries never create synthetic
-    trace bridges.
+    Each returned segment is a continuous non-gap alignment run.  For every
+    adjacent pair of aligned bases, all raw trace samples between their peak
+    positions are retained and only the horizontal coordinate is rescaled into
+    the corresponding alignment-column span.  Gap columns or missing trace
+    coordinates terminate the current path, so waveform never bridges a gap.
     """
 
-    if last_col is None:
-        last_col = max(mapping, default=0)
-    segments: list[tuple[_LocalTracePoint, ...]] = []
-    for column in range(first_col, last_col + 1):
-        trace_pos = mapping.get(column)
-        if trace_pos is None:
-            continue
-        pos = int(trace_pos)
-        if pos >= len(trace):
-            continue
-        local_points = _local_trace_points_for_column(
-            column,
-            pos,
-            trace,
-            window=window,
-        )
-        if len(local_points) >= 2:
-            segments.append(local_points)
-    return tuple(segments)
+    return _shared_peak_to_peak_trace_segments(
+        mapping,
+        trace,
+        left_margin=NAME_WIDTH,
+        column_width=BASE_WIDTH,
+        first_col=first_col,
+        last_col=last_col,
+    )
 
 
-def _local_trace_points_for_column(
-    alignment_column: int,
-    peak_trace_position: int,
-    trace: tuple[int, ...],
-    *,
-    window: int = LOCAL_TRACE_WINDOW,
-    sample_step: int = LOCAL_TRACE_SAMPLE_STEP,
-) -> tuple[_LocalTracePoint, ...]:
-    left = max(0, peak_trace_position - window)
-    right = min(len(trace) - 1, peak_trace_position + window)
-    if right < left:
-        return ()
-    span = max(1, right - left)
-    column_center = _alignment_column_x(alignment_column)
-    half_width = BASE_WIDTH * LOCAL_TRACE_COLUMN_FRACTION / 2
-    points: list[_LocalTracePoint] = []
-    sampled_positions = set(range(left, right + 1, max(1, sample_step)))
-    sampled_positions.add(peak_trace_position)
-    sampled_positions.add(right)
-    for trace_position in sorted(sampled_positions):
-        relative = (trace_position - left) / span
-        x = column_center - half_width + relative * (half_width * 2)
-        points.append(
-            _LocalTracePoint(
-                x=x,
-                signal=int(trace[trace_position]),
-                alignment_column=alignment_column,
-                trace_position=trace_position,
-            )
-        )
-    return tuple(points)
-
-
-def _smoothed_trace_path(
-    segment: tuple[_LocalTracePoint, ...],
+def _raw_trace_path(
+    segment: tuple[_AlignmentTracePoint, ...],
     *,
     x_offset: int,
     y_base: float,
 ) -> QPainterPath:
-    """Create a Tkinter smooth=True-like quadratic path for local trace points."""
+    """Create a path from unthinned raw trace samples in alignment coordinates."""
 
-    path = QPainterPath()
-    if not segment:
-        return path
-    points = tuple(
-        QPointF(point.x - x_offset, y_base - point.signal * TRACE_SCALE)
-        for point in segment
+    return _shared_raw_trace_path(
+        segment,
+        x_offset=x_offset,
+        y_base=y_base,
+        gain=ALIGNMENT_TRACE_GAIN,
     )
-    path.moveTo(points[0])
-    if len(points) == 1:
-        return path
-    if len(points) == 2:
-        path.quadTo(points[0], points[1])
-        return path
-    for index in range(1, len(points) - 1):
-        control = points[index]
-        next_point = points[index + 1]
-        midpoint = QPointF(
-            (control.x() + next_point.x()) / 2,
-            (control.y() + next_point.y()) / 2,
-        )
-        path.quadTo(control, midpoint)
-    path.quadTo(points[-1], points[-1])
-    return path
 
 
 def _trim_index_for_trace_position(read: SangerRead, trim_trace_position: int) -> int | None:
@@ -920,6 +1029,28 @@ def _trim_index_for_trace_position(read: SangerRead, trim_trace_position: int) -
     if trim_trace_position in positions:
         return positions.index(trim_trace_position)
     return None
+
+
+def _quality_for_trace_position(read: SangerRead, trace_position: int) -> int | None:
+    """Resolve quality at a mapped trace position using existing read coordinates.
+
+    The alignment mapper returns trimmed trace positions when trimmed state is
+    available.  The raw-position fallback keeps untrimmed reads useful without
+    inferring values or altering any scientific quality calculation.
+    """
+
+    trimmed_index = _trim_index_for_trace_position(read, trace_position)
+    trimmed_quality = tuple(getattr(read, "trimmed_quality", ()) or ())
+    if trimmed_index is not None and trimmed_index < len(trimmed_quality):
+        return int(trimmed_quality[trimmed_index])
+
+    raw_positions = tuple(getattr(read, "base_positions", ()) or ())
+    raw_quality = tuple(getattr(read, "quality", ()) or ())
+    try:
+        raw_index = raw_positions.index(trace_position)
+    except ValueError:
+        return None
+    return int(raw_quality[raw_index]) if raw_index < len(raw_quality) else None
 
 
 def _record_index(records: tuple[object, ...], sample_name: str) -> int | None:
@@ -937,7 +1068,11 @@ def _alignment_length(alignment: object) -> int:
 
 
 def _alignment_column_x(alignment_column: int) -> int:
-    return NAME_WIDTH + (alignment_column - 1) * BASE_WIDTH
+    return _shared_alignment_column_x(
+        alignment_column,
+        left_margin=NAME_WIDTH,
+        column_width=BASE_WIDTH,
+    )
 
 
 def _base_color(base: str) -> QColor:

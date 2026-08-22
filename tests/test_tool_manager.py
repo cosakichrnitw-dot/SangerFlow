@@ -7,7 +7,13 @@ from types import SimpleNamespace
 import unittest
 
 from core.tool_manager import ToolInfo, ToolManager, ToolStatus
-from tools.mafft_tool import MAFFT_TOOL_NAME, build_mafft_command, detect_mafft
+from tools.mafft_tool import (
+    MAFFT_TOOL_NAME,
+    MafftExecutableNotFoundError,
+    build_mafft_command,
+    detect_mafft,
+    resolve_mafft_executable,
+)
 
 
 class ToolManagerTests(unittest.TestCase):
@@ -66,6 +72,21 @@ class ToolManagerTests(unittest.TestCase):
         self.assertEqual(build_mafft_command("mafft", input_path="input.fasta", auto=False), ("mafft", "input.fasta"))
         with self.assertRaises(KeyError):
             ToolManager().get_tool("missing")
+
+    def test_resolution_prefers_configured_path_then_native_path(self) -> None:
+        self.assertEqual(
+            resolve_mafft_executable(
+                r"C:\Tools\mafft.bat",
+                which=lambda value: r"C:\Tools\mafft.bat" if value.endswith(".bat") else None,
+            ),
+            r"C:\Tools\mafft.bat",
+        )
+        self.assertEqual(
+            resolve_mafft_executable(None, which=lambda _value: "/usr/local/bin/mafft"),
+            "/usr/local/bin/mafft",
+        )
+        with self.assertRaises(MafftExecutableNotFoundError):
+            resolve_mafft_executable(None, which=lambda _value: None)
 
 
 if __name__ == "__main__":

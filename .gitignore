@@ -54,3 +54,10 @@ output/
 
 *.tmp
 *.log
+
+# =========================
+# Local SangerFlow test / analysis outputs
+# =========================
+
+*_blast_identification.xlsx
+SangerFlow-Studio/*.sangerflow

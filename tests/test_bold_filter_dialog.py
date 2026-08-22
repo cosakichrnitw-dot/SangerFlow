@@ -6,6 +6,8 @@ import os
 import tkinter as tk
 import unittest
 
+import pytest
+
 from core.bold_result import BoldHit, BoldResultDataset
 from gui.bold_filter_dialog import BoldFilterDialog, BoldFilterDialogError, BoldFilterDialogState
 
@@ -40,10 +42,14 @@ class BoldFilterDialogStateTests(unittest.TestCase):
             BoldFilterDialogState(BoldResultDataset("empty", "Empty", "input", None, "BOLD", ()))
 
 
+@pytest.mark.legacy_tk
+@unittest.skipUnless(
+    os.environ.get("SANGERFLOW_RUN_LEGACY_TK") == "1",
+    "legacy Tkinter native tests require SANGERFLOW_RUN_LEGACY_TK=1",
+)
 class BoldFilterDialogTests(unittest.TestCase):
     def test_apply_callback_and_cancel_when_tk_is_available(self) -> None:
-        if not os.environ.get("DISPLAY"):
-            self.skipTest("Tk display unavailable")
+        # This explicit native tier can run on macOS Aqua as well as X11.
         try:
             root = tk.Tk()
         except tk.TclError as error:

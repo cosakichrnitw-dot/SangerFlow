@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import tkinter as tk
 import unittest
+
+import pytest
 
 from core.blast_result import BlastHit, BlastResultDataset
 from gui.blast_filter_dialog import BlastFilterDialog, BlastFilterDialogError, BlastFilterDialogState
@@ -40,6 +43,11 @@ class BlastFilterDialogStateTests(unittest.TestCase):
             BlastFilterDialogState(BlastResultDataset("empty", "Empty", (), "input"))
 
 
+@pytest.mark.legacy_tk
+@unittest.skipUnless(
+    os.environ.get("SANGERFLOW_RUN_LEGACY_TK") == "1",
+    "legacy Tkinter native tests require SANGERFLOW_RUN_LEGACY_TK=1",
+)
 class BlastFilterDialogTests(unittest.TestCase):
     def test_apply_callback_and_cancel_when_tk_is_available(self) -> None:
         try:

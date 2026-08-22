@@ -1,9 +1,17 @@
 """Right-side metadata inspector for the current Project selection."""
 
-from PySide6.QtWidgets import QFormLayout, QLabel, QWidget
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFormLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
 from app.app_state import AppState
 from app.selection import SelectionKind, StudioSelection
+from widgets.metadata_presentation import (
+    metadata_summary,
+    show_source_filepaths_dialog,
+    source_filepaths,
+)
 
 
 class InspectorPanel(QWidget):
@@ -34,7 +42,9 @@ class InspectorPanel(QWidget):
             self._add("ID", _dataset_id(dataset))
             self._add("Type", _dataset_type(dataset))
             self._add("Sequence count", str(dataset.sequence_count))
-            self._add("Metadata", _format_metadata(dataset.metadata))
+            self._add("Sequence data", "Available")
+            self._add("Chromatogram source", _chromatogram_source_status(dataset))
+            self._add_metadata(dataset.metadata)
         elif selection.kind == SelectionKind.ANALYSIS_RESULT:
             entry = selection.payload
             self._title.setText("Analysis Result")
@@ -42,7 +52,7 @@ class InspectorPanel(QWidget):
             self._add("ID", entry.result_id)
             self._add("Type", entry.result_type.value)
             self._add("Parent Dataset", entry.parent_dataset_id)
-            self._add("Metadata", _format_metadata(entry.metadata))
+            self._add_metadata(entry.metadata)
         elif selection.kind == SelectionKind.PROJECT:
             project = selection.payload
             self._title.setText("Project")
@@ -50,7 +60,7 @@ class InspectorPanel(QWidget):
             self._add("ID", project.project_id)
             self._add("Dataset count", str(project.dataset_count))
             self._add("Analysis count", str(project.analysis_result_count))
-            self._add("Metadata", _format_metadata(project.metadata))
+            self._add_metadata(project.metadata)
         elif selection.kind == SelectionKind.VIEWER:
             viewer = selection.payload
             self._title.setText("Viewer")
@@ -78,7 +88,23 @@ class InspectorPanel(QWidget):
             self._title.setText("No selection")
 
     def _add(self, label: str, value: str) -> None:
-        self._layout.addRow(label, QLabel(str(value)))
+        widget = QLabel(str(value))
+        widget.setWordWrap(True)
+        widget.setTextInteractionFlags(
+            widget.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        widget.setMinimumWidth(0)
+        self._layout.addRow(label, widget)
+
+    def _add_metadata(self, metadata: object) -> None:
+        paths = source_filepaths(metadata)
+        self._add("Metadata", metadata_summary(metadata))
+        if paths:
+            button = QPushButton(f"{len(paths)} files  [Show…]", self)
+            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            button.clicked.connect(lambda: show_source_filepaths_dialog(self, paths))
+            self._layout.addRow("Source files", button)
 
     def _active_viewer_changed(self, viewer: object | None) -> None:
         viewer_kind = getattr(viewer, "viewer_kind", "")
@@ -88,14 +114,6 @@ class InspectorPanel(QWidget):
             while self._layout.rowCount() > 1:
                 self._layout.removeRow(1)
             self._title.setText("")
-
-
-def _format_metadata(metadata: object) -> str:
-    if not metadata:
-        return "-"
-    if hasattr(metadata, "items"):
-        return "; ".join(f"{key}={value}" for key, value in metadata.items())
-    return str(metadata)
 
 
 def _dataset_id(dataset: object) -> str:
@@ -109,6 +127,15 @@ def _dataset_type(dataset: object) -> str:
     if hasattr(dataset, "alignment_id"):
         return "AlignmentDataset"
     return type(dataset).__name__
+
+
+def _chromatogram_source_status(dataset: object) -> str:
+    records = tuple(getattr(dataset, "records", ()))
+    paths = [str(getattr(record, "metadata", {}).get("source_filepath", "")) for record in records]
+    paths = [path for path in paths if path]
+    if not paths:
+        return "Not Applicable"
+    return "Linked" if all(Path(path).is_file() for path in paths) else "Missing"
 
 
 def _normalize_selection(selection: object | None) -> StudioSelection | None:

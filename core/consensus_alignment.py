@@ -14,6 +14,8 @@ import subprocess
 from typing import Callable, Mapping, Optional, Sequence
 
 from Bio import SeqIO
+from tools.mafft_tool import MafftExecutableNotFoundError as _ToolMafftNotFoundError
+from tools.mafft_tool import resolve_mafft_executable
 
 
 _CONSENSUS_SYMBOLS = frozenset("ACGTNRYSWKMBDHV")
@@ -143,7 +145,7 @@ class AlignedConsensusSet:
 def run_consensus_alignment(
     sequences: Sequence[Mapping[str, object] | ConsensusAlignmentInput],
     *,
-    mafft_executable: str = "mafft",
+    mafft_executable: str | None = None,
     alignment_id: Optional[str] = None,
     runner: Optional[Callable[..., object]] = None,
 ) -> AlignedConsensusSet:
@@ -155,11 +157,15 @@ def run_consensus_alignment(
     """
 
     inputs = _coerce_alignment_inputs(sequences)
-    resolved_executable = shutil.which(mafft_executable)
-    if resolved_executable is None:
+    try:
+        resolved_executable = resolve_mafft_executable(
+            mafft_executable,
+            which=shutil.which,
+        )
+    except _ToolMafftNotFoundError as error:
         raise MafftExecutableNotFoundError(
             "MAFFT executable not found. Install MAFFT to enable consensus alignment."
-        )
+        ) from error
     execute = subprocess.run if runner is None else runner
     fasta_input = _format_input_fasta(inputs)
     try:

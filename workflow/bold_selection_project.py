@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from core.bold_filter import BoldResultSelection
+from core.lineage import LineageRelation, LineageRelationType, LineageSourceKind
 from core.project import DerivationType, Project
 from core.sequence_dataset import SequenceDataset
 from workflow.bold_selection_dataset import create_dataset_from_bold_selection
@@ -41,11 +42,28 @@ def add_bold_selection_dataset_to_project(
             "bold_result_id": dataset.metadata.get("bold_result_id"),
         }
     )
+    relations = [
+        LineageRelation(
+            LineageSourceKind.DATASET,
+            resolved_parent_id,
+            LineageRelationType.SUBSET_FROM_DATASET,
+        )
+    ]
+    bold_result_id = dataset.metadata.get("bold_result_id")
+    if isinstance(bold_result_id, str) and project.has_analysis_result(bold_result_id):
+        relations.append(
+            LineageRelation(
+                LineageSourceKind.ANALYSIS_RESULT,
+                bold_result_id,
+                LineageRelationType.SELECTED_FROM_BOLD,
+            )
+        )
     return project.add_dataset(
         dataset,
         parent_dataset_id=resolved_parent_id,
         derivation_type=DerivationType.SUBSET_FROM_DATASET,
         metadata=entry_metadata,
+        lineage_relations=tuple(relations),
     )
 
 

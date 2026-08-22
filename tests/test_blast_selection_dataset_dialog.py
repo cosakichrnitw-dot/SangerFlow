@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import tkinter as tk
 import unittest
+
+import pytest
 
 from core.blast_filter import BlastResultSelection
 from gui.blast_selection_dataset_dialog import (
@@ -32,6 +35,11 @@ class BlastSelectionDatasetDialogStateTests(unittest.TestCase):
             BlastSelectionDatasetDialogState(object())  # type: ignore[arg-type]
 
 
+@pytest.mark.legacy_tk
+@unittest.skipUnless(
+    os.environ.get("SANGERFLOW_RUN_LEGACY_TK") == "1",
+    "legacy Tkinter native tests require SANGERFLOW_RUN_LEGACY_TK=1",
+)
 class BlastSelectionDatasetDialogTests(unittest.TestCase):
     def test_create_callback_and_cancel_when_tk_is_available(self) -> None:
         try:

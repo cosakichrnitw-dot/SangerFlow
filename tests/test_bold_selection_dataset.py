@@ -7,6 +7,7 @@ import unittest
 
 from core.bold_filter import BoldResultSelection
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
+from core.lineage import RecordProvenance, RecordRef
 from workflow.bold_selection_dataset import create_dataset_from_bold_selection
 
 
@@ -49,6 +50,10 @@ class BoldSelectionDatasetTests(unittest.TestCase):
         self.assertEqual(subset.metadata["derived_from"], "BOLD_SELECTION")
         self.assertEqual(subset.metadata["bold_result_id"], "coi-bold")
         self.assertEqual(subset.metadata["selected_query_count"], 2)
+        self.assertEqual(
+            subset.get_record("IK347").provenance,
+            RecordProvenance((RecordRef("coi-trimmed", "IK347"),)),
+        )
         self.assertEqual(subset.metadata["population"], "Central Java")
         with self.assertRaises(TypeError):
             subset.metadata["population"] = "changed"  # type: ignore[index]

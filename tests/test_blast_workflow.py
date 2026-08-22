@@ -81,18 +81,18 @@ class BlastWorkflowTests(unittest.TestCase):
             ("first-ATGC", "second-ATGC", "first-ATGT", "second-ATGT"),
         )
 
-    def test_default_runner_delegates_to_existing_blast_sequence(self) -> None:
+    def test_default_runner_delegates_to_ncbi_url_api_runner(self) -> None:
         dataset = SequenceDataset.from_sequence_pairs(
             "input", "Input", SourceType.IMPORTED_FASTA, (("IK345", "ATGC"),)
         )
-        with patch("core.blast.blast_sequence", return_value=[raw_hit()]) as blast_sequence:
+        with patch("workflow.ncbi_blast_service.NcbiBlastRunner.__call__", return_value=[raw_hit()]) as ncbi_runner:
             result = run_blast_workflow(
                 dataset,
                 analysis_mode=BlastAnalysisMode.IDENTIFICATION,
                 database="nt",
             )
 
-        blast_sequence.assert_called_once_with("ATGC", database="nt")
+        ncbi_runner.assert_called_once_with("ATGC")
         self.assertEqual(result.hit_count(), 1)
 
     def test_rejects_invalid_inputs_and_empty_runner_results(self) -> None:

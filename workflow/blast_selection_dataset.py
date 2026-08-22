@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from core.blast_filter import BlastResultSelection
-from core.sequence_dataset import SequenceDataset
+from core.lineage import RecordProvenance, RecordRef
+from core.sequence_dataset import SequenceDataset, SequenceRecord
 
 
 def create_dataset_from_blast_selection(
@@ -34,13 +35,27 @@ def create_dataset_from_blast_selection(
 
     _validate_optional_result_link(source_dataset, selection)
     try:
-        selected_records = tuple(
+        source_records = tuple(
             source_dataset.get_record(query_id) for query_id in selection.selected_query_ids
         )
     except KeyError as error:
         raise ValueError(
             f"selection contains query_id absent from source_dataset: {error.args[0]}"
         ) from error
+
+    selected_records = tuple(
+        SequenceRecord(
+            sequence_id=record.sequence_id,
+            sequence=record.sequence,
+            description=record.description,
+            source_reference=record.source_reference,
+            metadata=record.metadata,
+            provenance=RecordProvenance(
+                (RecordRef(source_dataset.dataset_id, record.sequence_id),)
+            ),
+        )
+        for record in source_records
+    )
 
     dataset_metadata = dict(metadata or {})
     dataset_metadata.update(

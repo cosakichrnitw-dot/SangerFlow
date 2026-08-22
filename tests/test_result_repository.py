@@ -24,7 +24,7 @@ def make_blast_result() -> BlastResultDataset:
         database="nt",
         metadata={"repository_note": "external payload"},
         hits=(
-            BlastHit("IK345", "AB123", "Rhynchobatus", "Rhynchobatus sp.", 99, 100, 0.0, 650, "nt"),
+            BlastHit("IK345", "AB123", "Rhynchobatus", "Rhynchobatus sp.", 99, 100, 0.0, 650, "nt", 450.0, "Reference title"),
         ),
     )
 
@@ -55,6 +55,8 @@ class FilesystemResultRepositoryTests(unittest.TestCase):
             self.assertIsInstance(loaded_blast, BlastResultDataset)
             self.assertIsInstance(loaded_bold, BoldResultDataset)
             self.assertEqual(loaded_blast.hits, blast.hits)
+            self.assertEqual(loaded_blast.hits[0].bit_score, 450.0)
+            self.assertEqual(loaded_blast.hits[0].description, "Reference title")
             self.assertEqual(loaded_bold.hits, bold.hits)
             self.assertTrue(repository.has_result(blast.result_id))
             self.assertTrue((Path(directory) / "results" / "index.json").exists())

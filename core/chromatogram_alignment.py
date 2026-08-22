@@ -1,6 +1,9 @@
 import subprocess
+import shutil
 from Bio import AlignIO
 from io import StringIO
+
+from tools.mafft_tool import resolve_mafft_executable
 
 
 
@@ -35,7 +38,16 @@ def make_alignment_fasta(reads):
 # Run MAFFT
 # ==================================================
 
-def align_reads(reads):
+def align_reads(
+    reads,
+    *,
+    strategy="Auto",
+    gap_opening_penalty=None,
+    offset=None,
+    maxiterate=None,
+    adjust_direction=False,
+    mafft_executable=None,
+):
     """
     Align trimmed AB1 sequences using MAFFT.
     """
@@ -56,17 +68,31 @@ def align_reads(reads):
     )
 
 
+    strategy_options = {
+        "Auto": (["--auto"], None),
+        "FFT-NS-2": (["--retree", "2"], 0),
+        "FFT-NS-i": (["--retree", "2"], 1000),
+        "L-INS-i": (["--localpair"], 1000),
+        "G-INS-i": (["--globalpair"], 1000),
+    }
+    if strategy not in strategy_options:
+        raise ValueError("unsupported MAFFT strategy")
+    strategy_flags, strategy_maxiterate = strategy_options[strategy]
+    resolved_executable = resolve_mafft_executable(mafft_executable, which=shutil.which)
+    command = [resolved_executable, *strategy_flags]
+    if gap_opening_penalty is not None:
+        command.extend(["--op", str(float(gap_opening_penalty))])
+    if offset is not None:
+        command.extend(["--ep", str(float(offset))])
+    resolved_maxiterate = strategy_maxiterate if maxiterate is None else int(maxiterate)
+    if resolved_maxiterate is not None:
+        command.extend(["--maxiterate", str(resolved_maxiterate)])
+    if adjust_direction:
+        command.append("--adjustdirection")
+    command.append("-")
     result = subprocess.run(
 
-        [
-
-            "mafft",
-
-            "--auto",
-
-            "-"
-
-        ],
+        command,
 
         input=fasta,
 
@@ -116,9 +142,7 @@ def convert_alignment_to_dict(alignment):
 # Align existing FASTA file
 # ==================================================
 
-def align_fasta(
-    filepath
-):
+def align_fasta(filepath, *, mafft_executable=None):
     """
     Align existing FASTA sequences using MAFFT.
 
@@ -159,11 +183,12 @@ def align_fasta(
 
 
 
+    resolved_executable = resolve_mafft_executable(mafft_executable, which=shutil.which)
     result = subprocess.run(
 
         [
 
-            "mafft",
+            resolved_executable,
 
             "--auto",
 

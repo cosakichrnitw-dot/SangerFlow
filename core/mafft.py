@@ -1,11 +1,16 @@
 import subprocess
+import shutil
 from pathlib import Path
+
+from tools.mafft_tool import resolve_mafft_executable
 
 
 
 def run_mafft(
     input_fasta,
-    output_fasta
+    output_fasta,
+    *,
+    mafft_executable=None,
 ):
     """
     Run MAFFT alignment.
@@ -30,7 +35,7 @@ def run_mafft(
 
         command = [
 
-            "mafft",
+            resolve_mafft_executable(mafft_executable, which=shutil.which),
 
             "--auto",
 

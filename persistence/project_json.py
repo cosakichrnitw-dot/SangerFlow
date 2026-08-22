@@ -14,11 +14,26 @@ from typing import Any
 
 from core.alignment_dataset import AlignmentDataset, AlignmentRecord, MarkerRegion
 from core.analysis_result import AnalysisResult, AnalysisResultType
-from core.project import DerivationType, Project, ProjectAnalysisEntry, ProjectDatasetEntry
+from core.lineage import (
+    LineageRelation,
+    LineageRelationType,
+    LineageSourceKind,
+    RecordProvenance,
+    RecordRef,
+)
+from core.project import (
+    DerivationType,
+    Project,
+    ProjectAnalysisEntry,
+    ProjectDatasetEntry,
+    RevisionOperation,
+    RevisionState,
+)
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 
 
-PROJECT_SCHEMA_VERSION = 1
+PROJECT_SCHEMA_VERSION = 3
+_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2, PROJECT_SCHEMA_VERSION})
 
 
 class ProjectPersistenceError(ValueError):
@@ -61,14 +76,18 @@ def load_project(filepath: str | Path) -> Project:
 
     document_mapping = _mapping(document, "project JSON root")
     schema_version = document_mapping.get("schema_version")
-    if schema_version != PROJECT_SCHEMA_VERSION:
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in _SUPPORTED_SCHEMA_VERSIONS
+    ):
         raise ProjectPersistenceError(
             "unsupported project schema_version: "
-            f"{schema_version!r}; expected {PROJECT_SCHEMA_VERSION}"
+            f"{schema_version!r}; supported versions are {sorted(_SUPPORTED_SCHEMA_VERSIONS)}"
         )
     project_payload = _mapping(document_mapping.get("project"), "project")
     try:
-        return _deserialize_project(project_payload)
+        return _deserialize_project(project_payload, schema_version=int(schema_version))
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectPersistenceError(f"invalid project JSON: {error}") from error
 
@@ -128,6 +147,7 @@ def _serialize_dataset_entry(entry: ProjectDatasetEntry) -> dict[str, object]:
                         record.metadata,
                         f"record {record.sequence_id} metadata",
                     ),
+                    "provenance": _serialize_record_provenance(record.provenance),
                 }
                 for record in dataset.records
             ],
@@ -141,6 +161,15 @@ def _serialize_dataset_entry(entry: ProjectDatasetEntry) -> dict[str, object]:
             entry.derivation_type.value if entry.derivation_type is not None else None
         ),
         "metadata": _json_value(entry.metadata, f"dataset entry {dataset_id} metadata"),
+        "logical_id": entry.logical_id,
+        "revision_number": entry.revision_number,
+        "revision_state": entry.revision_state.value,
+        "revision_operation": entry.revision_operation.value,
+        "supersedes_dataset_id": entry.supersedes_dataset_id,
+        "lineage_relations": [
+            _serialize_lineage_relation(relation)
+            for relation in entry.lineage_relations
+        ],
     }
 
 
@@ -161,9 +190,9 @@ def _serialize_analysis_entry(entry: ProjectAnalysisEntry) -> dict[str, object]:
     }
 
 
-def _deserialize_project(payload: Mapping[str, Any]) -> Project:
+def _deserialize_project(payload: Mapping[str, Any], *, schema_version: int) -> Project:
     dataset_entries = tuple(
-        _deserialize_dataset_entry(_mapping(item, "dataset entry"))
+        _deserialize_dataset_entry(_mapping(item, "dataset entry"), schema_version=schema_version)
         for item in _sequence(payload.get("datasets"), "datasets")
     )
     analysis_entries = tuple(
@@ -179,7 +208,7 @@ def _deserialize_project(payload: Mapping[str, Any]) -> Project:
     )
 
 
-def _deserialize_dataset_entry(payload: Mapping[str, Any]) -> ProjectDatasetEntry:
+def _deserialize_dataset_entry(payload: Mapping[str, Any], *, schema_version: int) -> ProjectDatasetEntry:
     dataset_payload = _mapping(payload.get("dataset"), "dataset")
     dataset_model = dataset_payload.get("dataset_model", "SequenceDataset")
     if dataset_model == "AlignmentDataset":
@@ -222,6 +251,11 @@ def _deserialize_dataset_entry(payload: Mapping[str, Any]) -> ProjectDatasetEntr
                 description=_optional_text(record_payload.get("description"), "description"),
                 # source_reference is deliberately omitted from persistence.
                 metadata=_metadata(record_payload.get("metadata"), "record metadata"),
+                provenance=(
+                    _deserialize_record_provenance(record_payload.get("provenance"))
+                    if schema_version >= 2
+                    else RecordProvenance()
+                ),
             )
             for record_payload in (
                 _mapping(item, "sequence record")
@@ -238,6 +272,14 @@ def _deserialize_dataset_entry(payload: Mapping[str, Any]) -> ProjectDatasetEntr
     else:
         raise ValueError(f"invalid dataset_model: {dataset_model!r}")
     derivation_value = payload.get("derivation_type")
+    lineage_relations = (
+        tuple(
+            _deserialize_lineage_relation(_mapping(item, "lineage relation"))
+            for item in _sequence(payload.get("lineage_relations", []), "lineage_relations")
+        )
+        if schema_version >= 2
+        else ()
+    )
     return ProjectDatasetEntry(
         dataset=dataset,
         display_name=_text(payload["display_name"], "display_name"),
@@ -248,6 +290,88 @@ def _deserialize_dataset_entry(payload: Mapping[str, Any]) -> ProjectDatasetEntr
             else _enum(DerivationType, derivation_value, "derivation_type")
         ),
         metadata=_metadata(payload.get("metadata"), "dataset entry metadata"),
+        lineage_relations=lineage_relations,
+        # v1/v2 files do not make an evidenced statement about revision
+        # families.  Each persisted immutable Dataset therefore becomes its
+        # own logical Dataset at r1 rather than being inferred from lineage.
+        logical_id=(
+            _optional_text(payload.get("logical_id"), "logical_id")
+            if schema_version >= 3
+            else None
+        ),
+        revision_number=(
+            _integer(payload.get("revision_number", 1), "revision_number")
+            if schema_version >= 3
+            else 1
+        ),
+        revision_state=(
+            _enum(RevisionState, payload.get("revision_state", RevisionState.CURRENT.value), "revision_state")
+            if schema_version >= 3
+            else RevisionState.CURRENT
+        ),
+        revision_operation=(
+            _enum(
+                RevisionOperation,
+                payload.get("revision_operation", RevisionOperation.IMPORTED.value),
+                "revision_operation",
+            )
+            if schema_version >= 3
+            else RevisionOperation.IMPORTED
+        ),
+        supersedes_dataset_id=(
+            _optional_text(payload.get("supersedes_dataset_id"), "supersedes_dataset_id")
+            if schema_version >= 3
+            else None
+        ),
+    )
+
+
+def _serialize_lineage_relation(relation: LineageRelation) -> dict[str, object]:
+    return {
+        "source_kind": relation.source_kind.value,
+        "source_id": relation.source_id,
+        "relation_type": relation.relation_type.value,
+        "metadata": _json_value(relation.metadata, "lineage relation metadata"),
+    }
+
+
+def _deserialize_lineage_relation(payload: Mapping[str, Any]) -> LineageRelation:
+    return LineageRelation(
+        source_kind=_enum(LineageSourceKind, payload.get("source_kind"), "lineage source_kind"),
+        source_id=_text(payload.get("source_id"), "lineage source_id"),
+        relation_type=_enum(
+            LineageRelationType,
+            payload.get("relation_type"),
+            "lineage relation_type",
+        ),
+        metadata=_metadata(payload.get("metadata"), "lineage relation metadata"),
+    )
+
+
+def _serialize_record_provenance(provenance: RecordProvenance) -> dict[str, object]:
+    return {
+        "source_records": [
+            {"dataset_id": record.dataset_id, "sequence_id": record.sequence_id}
+            for record in provenance.source_records
+        ]
+    }
+
+
+def _deserialize_record_provenance(value: object) -> RecordProvenance:
+    if value is None:
+        return RecordProvenance()
+    payload = _mapping(value, "record provenance")
+    return RecordProvenance(
+        source_records=tuple(
+            RecordRef(
+                dataset_id=_text(record.get("dataset_id"), "provenance dataset_id"),
+                sequence_id=_text(record.get("sequence_id"), "provenance sequence_id"),
+            )
+            for record in (
+                _mapping(item, "record provenance source")
+                for item in _sequence(payload.get("source_records", []), "provenance source_records")
+            )
+        )
     )
 
 

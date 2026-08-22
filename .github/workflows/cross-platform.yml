@@ -1,0 +1,40 @@
+name: Cross-platform tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python: ["3.12"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install runtime and test dependencies
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e .
+      - name: Core, workflow, persistence, export, and import (headless)
+        # Tkinter widget smoke tests are marked legacy_tk and require an
+        # explicitly provisioned native GUI host.  Headless tests in those
+        # same modules remain part of the normal Beta gate.
+        run: python -m pytest -q tests -m "not legacy_tk"
+      - name: Studio offscreen tests
+        run: python -m pytest -q SangerFlow-Studio/tests
+      - name: Compile Python sources
+        run: python -m compileall -q core workflow export metadata persistence tools gui SangerFlow-Studio
+      - name: Studio offscreen entry-point smoke test
+        run: python SangerFlow-Studio/studio_entry.py --smoke-test
+      - name: Legacy Tk native tier contract
+        # This confirms the tier remains separately collectable.  A real
+        # native run is intentionally opt-in and requires a GUI-capable host:
+        # SANGERFLOW_RUN_LEGACY_TK=1 python -m pytest -q tests -m legacy_tk
+        run: python -m pytest -q tests -m legacy_tk

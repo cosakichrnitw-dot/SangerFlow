@@ -15,6 +15,8 @@ repository_root = studio_root.parent
 sys.path.insert(0, str(studio_root))
 sys.path.insert(0, str(repository_root))
 
+from app.qt_runtime import configure_qt_plugins
+configure_qt_plugins()
 from app.app_state import AppState
 from app.action_manager import ActionManager
 from app.selection import SelectionKind
@@ -23,27 +25,35 @@ from core.models import SangerRead
 from core.project import Project
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 from core.trimming import trim_sequence
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QGraphicsView, QMainWindow, QToolBar
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtWidgets import QApplication, QDialog, QGraphicsView, QMainWindow, QToolBar
 from app.read_visibility import ReadVisibilityManager
 from views.project_view import ProjectView
 from widgets.viewers.viewer_context import ViewerContext
 from widgets.viewers.chromatogram_viewer import (
     ChromatogramViewer,
+    TRACE_HEIGHT,
+    TRACE_TOP,
     has_chromatogram_sources,
     reads_from_dataset,
+    _read_view,
+    _trim_overlay_scene_rects,
 )
+from widgets.alignment_settings_dialog import AlignmentSettingsDialog
 from widgets.viewers.alignment_chromatogram_viewer import (
+    ALIGNMENT_TRACE_GAIN,
     BASE_WIDTH,
-    LOCAL_TRACE_WINDOW,
     NAME_WIDTH,
+    ROW_HEIGHT,
     AlignmentChromatogramViewer,
     _alignment_column_x,
-    _local_trace_segments,
-    _smoothed_trace_path,
+    _peak_to_peak_trace_segments,
+    _quality_for_trace_position,
+    _raw_trace_path,
     _trace_segments,
 )
 from widgets.viewers.alignment_viewer import AlignmentViewer
+from widgets.viewers.sequence_editor import SequenceEditor
 from widgets.viewers.quality_report_viewer import QualityReportViewer
 from widgets.quality_report_dock import QualityReportDock
 from widgets.inspector_panel import InspectorPanel
@@ -52,6 +62,19 @@ from widgets.inspector_panel import InspectorPanel
 class ChromatogramViewerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.application = QApplication.instance() or QApplication([])
+
+    def test_alignment_settings_default_and_advanced_metadata_are_reproducible(self) -> None:
+        dialog = AlignmentSettingsDialog(dataset_name="AB1 reads", sequence_count=3)
+        defaults = dialog.settings()
+        self.assertEqual(defaults.strategy, "Auto")
+        self.assertTrue(defaults.open_after_completion)
+        self.assertIsNone(defaults.gap_opening_penalty)
+        dialog._advanced.setChecked(True)
+        dialog._strategy.setCurrentText("L-INS-i")
+        dialog._gap_opening.setValue(1.7)
+        advanced = dialog.settings()
+        self.assertEqual(advanced.strategy, "L-INS-i")
+        self.assertEqual(advanced.metadata()["alignment_parameters"]["gap_opening_penalty"], 1.7)
 
     def test_chromatogram_viewer_displays_multiple_reads(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK346_F.ab1", "ATGT"))
@@ -84,6 +107,33 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertFalse(hasattr(viewer, "_sample_panel_widget"))
         self.assertFalse(hasattr(viewer, "_label_widget"))
         self.assertEqual(viewer._read_label_widget.width(), 110)
+
+    def test_closed_chromatogram_viewers_receive_no_visibility_callback(self) -> None:
+        manager = ReadVisibilityManager()
+        read = _read("IK345_F.ab1", "ATGC")
+        chromatogram = ChromatogramViewer(
+            (read,),
+            context=ViewerContext(None, None, read_visibility_manager=manager),
+        )
+        alignment = AlignmentChromatogramViewer(
+            (read,),
+            alignment=_alignment(((read.filename, read.sequence),)),
+            context=ViewerContext(None, None, read_visibility_manager=manager),
+        )
+        chromatogram_key = chromatogram._visibility_source_key
+        alignment_key = alignment._visibility_source_key
+
+        # TabManager invokes close_viewer() before removeTab()/deleteLater().
+        # That formal lifecycle must detach both short-lived viewers from the
+        # long-lived ReadVisibilityManager.
+        chromatogram.close_viewer()
+        alignment.close_viewer()
+        chromatogram.deleteLater()
+        alignment.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        manager.set_visible_ids(chromatogram_key, ())
+        manager.set_visible_ids(alignment_key, ())
+        self.application.processEvents()
 
     def test_open_dataset_keeps_all_sanger_reads_visible(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK346_F.ab1", "ATGT"))
@@ -161,6 +211,29 @@ class ChromatogramViewerTests(unittest.TestCase):
 
         self.assertEqual(tuple(read.read_id for read in viewer.visible_read_views), ("IK346_F.ab1",))
         self.assertEqual(dock.selected_read_ids(), ("IK346_F.ab1",))
+
+    def test_quality_report_dock_displays_q40_and_hq_using_q40_default(self) -> None:
+        # C13_FishF1.ab1 Geneious Default Profile comparison: 7,463 / 10,000
+        # bases meet Q40, which is 74.63% before one-decimal display rounding.
+        c13_quality = [40] * 7463 + [39] * 2537
+        viewer = ChromatogramViewer(
+            (_read_with_quality("C13_FishF1.ab1", "A" * len(c13_quality), c13_quality),),
+            title="Chromatograms",
+        )
+        dock = QualityReportDock(visibility_manager=ReadVisibilityManager())
+        dock.set_reads(viewer.read_views, source_key="c13-fixture")
+
+        self.assertEqual(dock._table.horizontalHeaderItem(2).text(), "Q20%")
+        self.assertEqual(dock._table.horizontalHeaderItem(3).text(), "Q30%")
+        self.assertEqual(dock._table.horizontalHeaderItem(4).text(), "Q40%")
+        self.assertEqual(dock._table.horizontalHeaderItem(5).text(), "HQ%")
+        self.assertNotIn("MeanQ", [dock._table.horizontalHeaderItem(i).text() for i in range(7)])
+        self.assertEqual(dock._table.item(0, 2).text(), "100.0")
+        self.assertEqual(dock._table.item(0, 3).text(), "100.0")
+        self.assertEqual(viewer.read_views[0].q40_rate, 74.63)
+        self.assertEqual(dock._table.item(0, 4).text(), "74.6")
+        self.assertEqual(dock._table.item(0, 5).text(), "74.6")
+        self.assertEqual(dock._hq_threshold, 40)
 
     def test_quality_visibility_is_shared_with_alignment_chromatogram_viewer(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK346_F.ab1", "ATGT"))
@@ -266,6 +339,25 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertEqual(after_tile_build["pending_tile_jobs"], 0)
         self.assertGreater(after_tile_build["trace_pixmap_rebuild_count"], 0)
 
+    def test_hundred_read_scene_uses_one_item_per_read_and_lazy_tiles(self) -> None:
+        """A 100-read workload must not multiply scene items by bases or traces."""
+
+        reads = tuple(
+            _read_untrimmed(f"IK{1000 + index}_F.ab1", "ATGC" * 50)
+            for index in range(100)
+        )
+        viewer = ChromatogramViewer(reads, title="100 reads")
+        viewer._canvas_widget.setFixedSize(240, 120)
+        viewer.refresh()
+
+        counts = viewer._canvas_widget.scene_item_counts()
+        diagnostics = viewer.rebuild_diagnostics()
+        self.assertEqual(counts["scene_items"], 100)
+        self.assertEqual(counts["read_items"], 100)
+        self.assertEqual(counts["trace_items"], 0)
+        self.assertEqual(counts["base_items"], 0)
+        self.assertLess(diagnostics["pending_tile_jobs"], len(reads) * 2)
+
     def test_chromatogram_viewer_uses_raw_read_values_not_trimmed_values(self) -> None:
         read = _read_untrimmed("IK345_F.ab1", "NATGCN")
         read.trim_start = 1
@@ -286,6 +378,50 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertEqual(viewer.read_views[0].quality, tuple(read.quality))
         self.assertEqual(viewer.read_views[0].base_positions, tuple(read.base_positions))
         self.assertEqual(viewer.read_views[0].trace_length, len(read.traces["A"]))
+
+    def test_trim_overlay_uses_raw_trace_positions_in_scene_coordinates(self) -> None:
+        read = _read_untrimmed("IK345_F.ab1", "ATGCATGC")
+        read.trim_start = 2
+        read.trim_end = 6
+        read_view = _read_view(read)
+
+        rects = _trim_overlay_scene_rects(read_view, scale_x=2.0, scale_y=1.5)
+
+        self.assertEqual(len(rects), 2)
+        self.assertEqual(rects[0].x(), 0)
+        self.assertEqual(rects[0].width(), read.base_positions[2] * 2.0)
+        self.assertEqual(rects[1].x(), read.base_positions[6] * 2.0)
+        self.assertEqual(rects[0].y(), TRACE_TOP * 1.5)
+        self.assertEqual(rects[0].height(), TRACE_HEIGHT / 2 * 1.5)
+
+    def test_trim_overlay_keeps_global_coordinates_across_tile_boundaries(self) -> None:
+        read = _read_untrimmed("IK345_F.ab1", "ATGC")
+        read.base_positions = [100, 600, 1100, 1600]
+        read.traces = {
+            "A": [1 for _ in range(1900)],
+            "C": [1 for _ in range(1900)],
+            "G": [1 for _ in range(1900)],
+            "T": [1 for _ in range(1900)],
+        }
+        read.trim_start = 1
+        read.trim_end = 3
+        read_view = _read_view(read)
+
+        rects = _trim_overlay_scene_rects(read_view, scale_x=1.0, scale_y=1.0)
+
+        self.assertEqual(len(rects), 1)
+        self.assertEqual(rects[0].x(), 0)
+        self.assertEqual(rects[0].width(), 600)
+
+    def test_trim_overlay_does_not_apply_dpr_as_an_extra_scale(self) -> None:
+        read = _read_untrimmed("IK345_F.ab1", "ATGC")
+        read.trim_start = 1
+        read.trim_end = 3
+        read_view = _read_view(read)
+
+        rects = _trim_overlay_scene_rects(read_view, scale_x=2.0, scale_y=2.0)
+
+        self.assertEqual(rects[0].width(), read.base_positions[1] * 2.0)
 
     def test_horizontal_scroll_is_based_on_raw_trace_width(self) -> None:
         read = _read_untrimmed("IK345_F.ab1", "ATGCATGCATGC")
@@ -442,40 +578,31 @@ class ChromatogramViewerTests(unittest.TestCase):
         provider = viewer.action_providers[0]
         actions = provider.actions_for(viewer)
         action_ids = tuple(action.action_id for action in actions)
-        events = []
-        viewer.open_related_requested.connect(events.append)
 
         self.assertEqual(
             action_ids,
             (
                 "chromatogram.toggle_trim_region",
-                "chromatogram.export",
-                "chromatogram.run_blast",
+                "chromatogram.open_sequence_editor",
                 "chromatogram.build_consensus",
                 "chromatogram.open_quality_report",
                 "chromatogram.align",
-                "chromatogram.dev_start_paint_profile",
-                "chromatogram.dev_stop_paint_profile",
             ),
         )
         self.assertFalse(viewer.show_trim_region)
         actions[0].callback()
         self.assertTrue(viewer.show_trim_region)
-        actions[2].callback()
-        actions[3].callback()
-        with patch("builtins.print") as print_mock:
-            actions[-2].callback()
-            snapshot = actions[-1].callback()
+        self.assertFalse(actions[1].enabled)
+        self.assertFalse(actions[2].enabled)
+        self.assertFalse(actions[3].enabled)
+        self.assertFalse(actions[4].enabled)
+        viewer.start_paint_profile()
+        snapshot = viewer.stop_paint_profile()
 
-        self.assertEqual(events[0]["action"], "BLAST")
-        self.assertEqual(events[1]["action"], "CONSENSUS")
         self.assertEqual(snapshot["paint_calls"], 0)
-        printed_text = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
-        self.assertIn("[PROFILE] started", printed_text)
-        self.assertIn("=== Chromatogram Paint Profile ===", printed_text)
-        self.assertIn("dominant section:", printed_text)
+        self.assertEqual(snapshot["paint_calls"], 0)
 
-    def test_chromatogram_dev_profile_actions_are_registered_on_toolbar(self) -> None:
+    def test_chromatogram_dev_profile_actions_are_not_registered_on_toolbar(self) -> None:
         state = AppState()
         manager = ActionManager(state)
         toolbar = QToolBar()
@@ -487,35 +614,17 @@ class ChromatogramViewerTests(unittest.TestCase):
 
         start_action = manager.action("chromatogram.dev_start_paint_profile")
         stop_action = manager.action("chromatogram.dev_stop_paint_profile")
-        self.assertIsNotNone(start_action)
-        self.assertIsNotNone(stop_action)
-        self.assertIn("Dev: Start Paint Profile", [action.text() for action in toolbar.actions()])
-        self.assertIn("Dev: Stop Paint Profile", [action.text() for action in toolbar.actions()])
+        self.assertIsNone(start_action)
+        self.assertIsNone(stop_action)
+        self.assertNotIn("Dev: Start Paint Profile", [action.text() for action in toolbar.actions()])
+        self.assertNotIn("Dev: Stop Paint Profile", [action.text() for action in toolbar.actions()])
 
-        with patch("builtins.print") as print_mock:
-            start_action.trigger()
-            stop_action.trigger()
-
-        printed_text = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
-        self.assertIn("[PROFILE] started", printed_text)
-        self.assertIn("=== Chromatogram Paint Profile ===", printed_text)
-        self.assertIn("[PROFILE] stopped", printed_text)
-
-    def test_chromatogram_dev_profile_buttons_are_available_inside_viewer(self) -> None:
+    def test_chromatogram_dev_profile_buttons_are_not_present_inside_viewer(self) -> None:
         viewer = ChromatogramViewer((_read("IK345_F.ab1", "ATGC"),), title="Chromatograms")
 
-        self.assertFalse(viewer._dev_profile_panel.isHidden())
-        self.assertEqual(viewer._dev_start_profile_button.text(), "Start Paint Profile")
-        self.assertEqual(viewer._dev_stop_profile_button.text(), "Stop Paint Profile")
-
-        with patch("builtins.print") as print_mock:
-            viewer._dev_start_profile_button.click()
-            viewer._dev_stop_profile_button.click()
-
-        printed_text = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
-        self.assertIn("[PROFILE] started", printed_text)
-        self.assertIn("=== Chromatogram Paint Profile ===", printed_text)
-        self.assertIn("[PROFILE] stopped", printed_text)
+        self.assertFalse(hasattr(viewer, "_dev_profile_panel"))
+        self.assertTrue(callable(viewer.start_paint_profile))
+        self.assertTrue(callable(viewer.stop_paint_profile))
 
     def test_quality_report_viewer_uses_existing_read_quality_metrics(self) -> None:
         viewer = ChromatogramViewer(
@@ -579,51 +688,94 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertEqual(tuple(point[0] for point in segments[0]), (1, 2))
         self.assertEqual(tuple(point[0] for point in segments[1]), (4, 5))
 
-    def test_alignment_chromatogram_viewer_draws_local_trace_around_each_peak(self) -> None:
+    def test_alignment_chromatogram_viewer_draws_raw_peak_to_peak_trace_samples(self) -> None:
         mapping = {1: 25, 2: 50, 3: None, 4: 75, 5: 100}
         trace = tuple(range(140))
 
-        segments = _local_trace_segments(
+        segments = _peak_to_peak_trace_segments(
             mapping,
             trace,
             first_col=1,
             last_col=5,
         )
 
-        self.assertEqual(LOCAL_TRACE_WINDOW, 20)
-        self.assertEqual(len(segments), 4)
-        self.assertGreater(len(segments[0]), 2)
-        self.assertGreater(len(segments[1]), 2)
-        self.assertGreater(len(segments[2]), 2)
-        self.assertGreater(len(segments[3]), 2)
-        self.assertEqual(
-            tuple({point.alignment_column for point in segment} for segment in segments),
-            ({1}, {2}, {4}, {5}),
-        )
-        self.assertGreaterEqual(
-            len([point for point in segments[0] if point.alignment_column == 1]),
-            LOCAL_TRACE_WINDOW + 1,
-        )
-        for left, right in zip(segments, segments[1:]):
-            self.assertLess(left[-1].x, _alignment_column_x(left[-1].alignment_column) + BASE_WIDTH / 2)
-            self.assertGreater(right[0].x, _alignment_column_x(right[0].alignment_column) - BASE_WIDTH / 2)
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(len(segments[0]), 26)
+        self.assertEqual(len(segments[1]), 26)
+        self.assertEqual(segments[0][0].trace_position, 25)
+        self.assertEqual(segments[0][-1].trace_position, 50)
+        self.assertEqual(segments[1][0].trace_position, 75)
+        self.assertEqual(segments[1][-1].trace_position, 100)
+        self.assertEqual(segments[0][0].x, _alignment_column_x(1))
+        self.assertEqual(segments[0][-1].x, _alignment_column_x(2))
+        self.assertEqual(segments[1][0].x, _alignment_column_x(4))
+        self.assertEqual(segments[1][-1].x, _alignment_column_x(5))
 
-    def test_alignment_chromatogram_viewer_uses_smoothed_qpainter_path(self) -> None:
+    def test_alignment_chromatogram_viewer_uses_compact_review_layout(self) -> None:
+        self.assertLess(NAME_WIDTH, 180)
+        self.assertLess(BASE_WIDTH, 28)
+        self.assertLess(ROW_HEIGHT, 180)
+
+    def test_alignment_chromatogram_viewer_uses_qpainter_path_for_raw_trace_samples(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"),)
         alignment = _alignment((("IK345_F.ab1", "ATGC"),))
         viewer = AlignmentChromatogramViewer(reads, alignment=alignment)
         trace = tuple(reads[0].trimmed_traces["A"])
-        segment = _local_trace_segments(
+        segment = _peak_to_peak_trace_segments(
             viewer.maps["IK345_F.ab1"],
             trace,
             first_col=1,
             last_col=2,
         )[0]
 
-        path = _smoothed_trace_path(segment, x_offset=0, y_base=100)
+        path = _raw_trace_path(segment, x_offset=0, y_base=100)
 
-        element_types = tuple(path.elementAt(index).type for index in range(path.elementCount()))
-        self.assertIn(path.ElementType.CurveToElement, element_types)
+        self.assertEqual(path.elementCount(), len(segment))
+        self.assertGreater(path.elementCount(), 2)
+
+    def test_alignment_chromatogram_viewer_uses_lower_trace_gain_without_changing_mapping(self) -> None:
+        mapping = {1: 10, 2: 20}
+        trace = tuple(range(30))
+
+        segment = _peak_to_peak_trace_segments(mapping, trace, first_col=1, last_col=2)[0]
+        path = _raw_trace_path(segment, x_offset=0, y_base=100)
+
+        self.assertEqual(ALIGNMENT_TRACE_GAIN, 0.022)
+        self.assertEqual(segment[0].trace_position, 10)
+        self.assertEqual(segment[-1].trace_position, 20)
+        self.assertAlmostEqual(path.elementAt(0).y, 100 - 10 * ALIGNMENT_TRACE_GAIN)
+
+    def test_alignment_chromatogram_column_click_recenters_horizontal_scroll(self) -> None:
+        sequence = "ATGC" * 20
+        reads = (_read("IK345_F.ab1", sequence),)
+        alignment = _alignment((("IK345_F.ab1", sequence),))
+        viewer = AlignmentChromatogramViewer(reads, alignment=alignment)
+        viewer._canvas_widget.setFixedSize(360, 260)
+        viewer.refresh()
+
+        selected = viewer.select_alignment_cell(0, 49)
+
+        plot_width = viewer._canvas_widget.width() - NAME_WIDTH
+        expected = max(0, int((50 - 1) * BASE_WIDTH - plot_width / 2))
+        self.assertEqual(selected[1], 50)
+        self.assertEqual(viewer._x_offset, expected)
+        viewport_x = viewer._canvas_widget._viewport_x_for_column(50)
+        self.assertAlmostEqual(viewport_x, NAME_WIDTH + plot_width / 2, delta=BASE_WIDTH)
+        self.assertEqual(viewer.selected_cell, ("IK345_F.ab1", 50))
+
+    def test_alignment_chromatogram_gap_click_highlights_without_trace_mapping(self) -> None:
+        reads = (_read("IK345_F.ab1", "ATGC"),)
+        alignment = _alignment((("IK345_F.ab1", "AT-GC"),))
+        viewer = AlignmentChromatogramViewer(reads, alignment=alignment)
+
+        selected = viewer.select_alignment_cell(0, 2)
+
+        self.assertEqual(selected[1], 3)
+        self.assertEqual(selected[2], "-")
+        self.assertIsNone(selected[3])
+        self.assertEqual(viewer.selected_cell, ("IK345_F.ab1", 3))
+        self.assertIn("Base: GAP", viewer._status.text())
+        self.assertIn("Trim trace position: —", viewer._status.text())
 
     def test_alignment_chromatogram_viewer_syncs_trace_position_back_to_alignment(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK346_F.ab1", "ATGT"))
@@ -653,17 +805,19 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertEqual(
             action_ids,
             (
-                "alignment_chromatogram.align",
                 "alignment_chromatogram.toggle_trim_region",
+                "alignment_chromatogram.toggle_quality",
                 "alignment_chromatogram.open_quality_report",
-                "alignment_chromatogram.build_consensus",
-                "alignment_chromatogram.export",
-                "alignment_chromatogram.run_blast",
+                "alignment_chromatogram.review_consensus",
             ),
         )
+        self.assertFalse(actions[3].enabled)
         self.assertFalse(viewer.show_trim_region)
-        actions[1].callback()
+        actions[0].callback()
         self.assertTrue(viewer.show_trim_region)
+        self.assertTrue(viewer.show_quality)
+        actions[1].callback()
+        self.assertFalse(viewer.show_quality)
 
     def test_alignment_chromatogram_viewer_adapts_quality_to_alignment_columns(self) -> None:
         reads = (
@@ -680,6 +834,18 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertEqual(viewer.consensus, "----A")
         self.assertEqual(viewer._confidence[-1], 100.0)
         self.assertEqual(viewer._consensus_warning, "")
+
+    def test_alignment_chromatogram_quality_uses_mapped_base_and_gap_has_no_quality(self) -> None:
+        raw_read = _read_untrimmed("IK345_F.ab1", "AT")
+        raw_read.quality = [12, 39]
+        alignment_read = _read("IK345_F.ab1", "ATGC")
+        alignment = _alignment((("IK345_F.ab1", "AT-GC"),))
+        viewer = AlignmentChromatogramViewer((alignment_read,), alignment=alignment)
+
+        mapping = viewer.maps["IK345_F.ab1"]
+        self.assertEqual(_quality_for_trace_position(raw_read, raw_read.base_positions[0]), 12)
+        self.assertIsNone(mapping[3])
+        self.assertEqual(_quality_for_trace_position(raw_read, raw_read.base_positions[1]), 39)
 
     def test_dataset_viewer_actions_open_quality_and_alignment_tabs(self) -> None:
         read = _read("IK345_F.ab1", "ATGC")
@@ -732,6 +898,9 @@ class ChromatogramViewerTests(unittest.TestCase):
         with patch(
             "controllers.project_controller.align_reads",
             return_value=_alignment((("IK345_F.ab1", "ATGC"),)),
+        ), patch(
+            "controllers.project_controller.AlignmentSettingsDialog.exec",
+            return_value=QDialog.DialogCode.Accepted,
         ):
             alignment_action = view.action_manager.action("chromatogram.align")
             self.assertIsNotNone(alignment_action)
@@ -742,6 +911,42 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertIsInstance(tabs.widget(4), AlignmentViewer)
         self.assertIsNotNone(state.project)
         self.assertEqual(state.project.dataset_ids, ("ab1-trimmed", "ab1-trimmed_alignment"))
+
+    def test_fixed_toolbar_chromatogram_opens_source_sequence_editor(self) -> None:
+        read = _read("IK345_F.ab1", "ATGC")
+        dataset = SequenceDataset(
+            dataset_id="ab1-source",
+            name="AB1 source",
+            source_type=SourceType.AB1_TRIMMED,
+            records=(
+                SequenceRecord(
+                    sequence_id="IK345_F",
+                    sequence=read.trimmed_sequence,
+                    source_reference=read,
+                ),
+            ),
+        )
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        toolbar = QToolBar()
+        view.action_manager.attach_toolbar(toolbar)
+        controller.open_project(Project.create("project-source", "Source").add_dataset(dataset))
+        self.application.processEvents()
+
+        explorer = view.widget(0)
+        explorer.setCurrentItem(explorer.topLevelItem(0).child(0).child(0))
+        self.application.processEvents()
+        view.action_manager.action("dataset.open_chromatogram_viewer").trigger()
+        self.application.processEvents()
+
+        fixed = view.action_manager._fixed_actions["sequence_editor"]
+        self.assertTrue(fixed.isEnabled())
+        fixed.trigger()
+        self.application.processEvents()
+
+        tabs = view.widget(1)
+        self.assertIsInstance(tabs.currentWidget(), SequenceEditor)
 
     def test_project_controller_opens_ab1_folder_with_existing_core_reader(self) -> None:
         state = AppState()

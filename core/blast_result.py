@@ -58,6 +58,8 @@ class BlastHit:
     evalue: float
     alignment_length: int
     database: str
+    bit_score: float | None = None
+    description: str | None = None
 
     def __post_init__(self) -> None:
         _required_text(self.query_id, "query_id")
@@ -77,6 +79,17 @@ class BlastHit:
         if self.alignment_length <= 0:
             raise ValueError("alignment_length must be a positive integer")
         object.__setattr__(self, "evalue", normalized_evalue)
+        if self.bit_score is not None:
+            if isinstance(self.bit_score, bool) or not isinstance(self.bit_score, (int, float)):
+                raise ValueError("bit_score must be a non-negative number or None")
+            normalized_bit_score = float(self.bit_score)
+            if not isfinite(normalized_bit_score) or normalized_bit_score < 0.0:
+                raise ValueError("bit_score must be a non-negative number or None")
+            object.__setattr__(self, "bit_score", normalized_bit_score)
+        if self.description is not None:
+            if not isinstance(self.description, str) or not self.description.strip():
+                raise ValueError("description must be a non-empty string or None")
+            object.__setattr__(self, "description", self.description.strip())
 
 
 @dataclass(frozen=True)

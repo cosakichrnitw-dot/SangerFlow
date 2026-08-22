@@ -198,6 +198,8 @@ def _serialize_result(result: StoredAnalysisResult) -> dict[str, object]:
                         "evalue": hit.evalue,
                         "alignment_length": hit.alignment_length,
                         "database": hit.database,
+                        "bit_score": hit.bit_score,
+                        "description": hit.description,
                     }
                     for hit in result.hits
                 ],
