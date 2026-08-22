@@ -79,3 +79,5 @@ SangerFlow-Studio/*.sangerflow
 .venv_workspace_rebuild_*/
 .vscode/
 SangerFlow-Studio/.vscode/
+
+*.egg-info/
