@@ -1,12 +1,19 @@
 """PySide6 main window composition for the independent Studio prototype."""
 
-from PySide6.QtCore import QTimer, Slot, Qt
+from PySide6.QtCore import QEvent, QTimer, Slot, Qt
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QStyle
+from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QStyle
 
 from app.app_state import AppState
+from app.drop_import import (
+    ExternalDropError,
+    ExternalDropKind,
+    classify_external_drop_paths,
+)
 from app.icon_registry import studio_icon
+from app.selection import StudioSelection
 from controllers.project_controller import ProjectController
+from core.sequence_dataset import SequenceDataset
 from views.project_view import ProjectView
 from widgets.project_dialogs import NewProjectDialog
 from widgets.tool_settings_dialog import ToolSettingsDialog
@@ -25,6 +32,19 @@ class MainWindow(QMainWindow):
         )
         self._project_view.dock_manager.attach_main_window(self)
         self.setCentralWidget(self._project_view)
+        self.setAcceptDrops(True)
+        # Keep the overlay inside the centre tab workspace.  A direct child of
+        # ProjectView would become a fourth QSplitter pane and alter layout.
+        self._drop_target = self._project_view.widget(1)
+        self._drop_overlay = QLabel("Drop files to import", self._drop_target)
+        self._drop_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drop_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._drop_overlay.setStyleSheet(
+            "background: rgba(44, 116, 180, 38); border: 2px dashed #2c74b4; "
+            "border-radius: 8px; color: #174a73; font-size: 18px; font-weight: 600;"
+        )
+        self._drop_overlay.hide()
+        self._drop_target.installEventFilter(self)
         # Context menus mirror transient toolbar actions.  Use the same
         # deferred boundary as ActionManager so a menu/action is never removed
         # while Cocoa is still dispatching its triggering toolbar event.
@@ -148,6 +168,9 @@ class MainWindow(QMainWindow):
             import_sequence_file=self._choose_sequence_file,
         )
         action_manager.attach_toolbar(toolbar)
+        action_manager.sequence_dataset_dropped_on_align.connect(
+            self._align_dropped_sequence_dataset
+        )
         self._project_view.action_manager.actions_rebuilt.connect(
             self._schedule_context_menu_refresh
         )
@@ -163,6 +186,32 @@ class MainWindow(QMainWindow):
         index = getattr(tabs, "currentIndex", lambda: 0)()
         if index > 0:
             tabs.setCurrentIndex(index - 1)
+
+    @Slot(str, str)
+    def _align_dropped_sequence_dataset(self, project_id: str, dataset_id: str) -> None:
+        """Select a dropped Dataset, then route it through the normal Align action."""
+
+        project = self._state.current_project
+        if project is None or getattr(project, "project_id", None) != project_id:
+            self.statusBar().showMessage("The dropped Dataset is no longer in the active Project.", 5000)
+            return
+        try:
+            entry = project.get_entry(dataset_id)
+        except (KeyError, ValueError):
+            self.statusBar().showMessage("The dropped Dataset is no longer available.", 5000)
+            return
+        dataset = getattr(entry, "dataset", None)
+        is_current = getattr(project, "is_current_revision", lambda _id: False)
+        if not isinstance(dataset, SequenceDataset) or not is_current(dataset_id):
+            self.statusBar().showMessage("Only a current Sequence Dataset can be aligned.", 5000)
+            return
+        # This is exactly the normal Explorer selection/open route.  The
+        # ActionManager then invokes the Dataset Viewer's existing Align
+        # descriptor on its next safe deferred update.
+        self._controller.select_item(StudioSelection.dataset(entry), open_viewer=True)
+        self._project_view.action_manager.request_dataset_action(
+            "dataset.align_sequences", dataset_id
+        )
 
     @Slot(object)
     def _on_project_changed(self, _project: object) -> None:
@@ -313,6 +362,11 @@ class MainWindow(QMainWindow):
         )
         if not filepath:
             return
+        self._open_project_bundle_path(filepath)
+
+    def _open_project_bundle_path(self, filepath: str) -> None:
+        """Open a selected bundle after either a dialog or an external drop."""
+
         try:
             loaded_bundle = self._controller.open_project_bundle(filepath)
         except Exception as error:
@@ -350,6 +404,9 @@ class MainWindow(QMainWindow):
         handling = self._choose_ab1_source_handling()
         if handling is None:
             return
+        self._open_ab1_folder_path(folderpath, handling)
+
+    def _open_ab1_folder_path(self, folderpath: str, handling: str) -> None:
         try:
             tab_name = self._controller.open_ab1_folder(
                 folderpath,
@@ -373,16 +430,28 @@ class MainWindow(QMainWindow):
         handling = self._choose_ab1_source_handling()
         if handling is None:
             return
+        self._open_ab1_file_paths((filepath,), handling)
+
+    def _open_ab1_file_paths(self, filepaths: tuple[str, ...], handling: str) -> None:
         try:
-            tab_name = self._controller.open_ab1_file(
-                filepath,
-                source_file_handling=handling,
-            )
+            if len(filepaths) == 1:
+                tab_name = self._controller.open_ab1_file(
+                    filepaths[0],
+                    source_file_handling=handling,
+                )
+            else:
+                tab_name = self._controller.open_ab1_files(
+                    filepaths,
+                    source_file_handling=handling,
+                )
         except Exception as error:
-            QMessageBox.critical(self, "Could not open AB1 file", str(error))
+            title = "Could not open AB1 files" if len(filepaths) > 1 else "Could not open AB1 file"
+            QMessageBox.critical(self, title, str(error))
             return
         if tab_name:
-            self.statusBar().showMessage(f"Opened AB1 file: {filepath}", 5000)
+            label = filepaths[0] if len(filepaths) == 1 else f"{len(filepaths)} AB1 files"
+            noun = "file" if len(filepaths) == 1 else "files"
+            self.statusBar().showMessage(f"Opened AB1 {noun}: {label}", 5000)
 
     def _choose_sequence_file(self) -> None:
         filepath, _ = QFileDialog.getOpenFileName(
@@ -393,6 +462,9 @@ class MainWindow(QMainWindow):
         )
         if not filepath:
             return
+        self._open_sequence_file_path(filepath)
+
+    def _open_sequence_file_path(self, filepath: str) -> None:
         try:
             tab_name = self._controller.open_sequence_file(filepath)
         except Exception as error:
@@ -400,6 +472,92 @@ class MainWindow(QMainWindow):
             return
         if tab_name:
             self.statusBar().showMessage(f"Opened sequence file: {filepath}", 5000)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override
+        try:
+            self._drop_request_from_event(event)
+        except ExternalDropError as error:
+            self._set_drop_feedback(False)
+            self.statusBar().showMessage(str(error), 4000)
+            event.ignore()
+            return
+        self._set_drop_feedback(True)
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        try:
+            self._drop_request_from_event(event)
+        except ExternalDropError:
+            self._set_drop_feedback(False)
+            event.ignore()
+            return
+        self._set_drop_feedback(True)
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._set_drop_feedback(False)
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._set_drop_feedback(False)
+        try:
+            request = self._drop_request_from_event(event)
+            self._route_external_drop(request)
+        except ExternalDropError as error:
+            QMessageBox.warning(self, "Unsupported Import", str(error))
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._position_drop_overlay()
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+        if watched is self._drop_target and event.type() == QEvent.Type.Resize:
+            self._position_drop_overlay()
+        return super().eventFilter(watched, event)
+
+    def _drop_request_from_event(self, event):
+        mime_data = event.mimeData()
+        if not mime_data.hasUrls():
+            raise ExternalDropError("Drop local files or folders from Finder to import them.")
+        urls = tuple(mime_data.urls())
+        if not urls or any(not url.isLocalFile() for url in urls):
+            raise ExternalDropError("Only local Finder files and folders can be imported.")
+        return classify_external_drop_paths(tuple(url.toLocalFile() for url in urls))
+
+    def _route_external_drop(self, request) -> None:
+        """Route a classified drop through the same Controller APIs as File."""
+
+        if request.kind is ExternalDropKind.PROJECT_BUNDLE:
+            if self._confirm_discard_or_save():
+                self._open_project_bundle_path(str(request.paths[0]))
+            return
+        if request.kind is ExternalDropKind.SEQUENCE_FILE:
+            self._open_sequence_file_path(str(request.paths[0]))
+            return
+        handling = self._choose_ab1_source_handling()
+        if handling is None:
+            return
+        if request.kind is ExternalDropKind.AB1_FOLDER:
+            self._open_ab1_folder_path(str(request.paths[0]), handling)
+            return
+        if request.kind is ExternalDropKind.AB1_FILES:
+            self._open_ab1_file_paths(tuple(str(path) for path in request.paths), handling)
+            return
+        raise ExternalDropError("Unsupported import request.")
+
+    def _set_drop_feedback(self, visible: bool) -> None:
+        self._position_drop_overlay()
+        self._drop_overlay.setVisible(visible)
+        if visible:
+            self._drop_overlay.raise_()
+            self.statusBar().showMessage("Drop files to import", 0)
+
+    def _position_drop_overlay(self) -> None:
+        if hasattr(self, "_drop_overlay"):
+            self._drop_overlay.setGeometry(self._drop_target.rect().adjusted(12, 12, -12, -12))
 
     def _save_project(self) -> bool:
         if self._state.current_bundle_path is None:

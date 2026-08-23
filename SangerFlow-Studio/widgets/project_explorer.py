@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QHBoxLayout,
     QInputDialog,
     QLineEdit,
@@ -19,11 +21,46 @@ from PySide6.QtWidgets import (
 from app.app_state import AppState
 from app.icon_registry import studio_icon
 from app.gui_thread import assert_main_gui_thread
+from app.internal_dataset_drag import create_project_dataset_mime_data
 from app.selection import StudioSelection
 from controllers.project_controller import ProjectController
 from core.alignment_dataset import AlignmentDataset
 from core.project import Project, ProjectDatasetEntry, RevisionState
 from core.sequence_dataset import SequenceDataset
+
+
+class _ProjectExplorerTree(QTreeWidget):
+    """Tree that can export a current SequenceDataset identity as a Qt drag."""
+
+    def __init__(self, state: AppState) -> None:
+        super().__init__()
+        self._state = state
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+
+    def startDrag(self, _supported_actions) -> None:  # noqa: N802 - Qt override
+        item = self.currentItem()
+        if item is None:
+            return
+        selection = item.data(0, Qt.ItemDataRole.UserRole)
+        entry = getattr(selection, "payload", None)
+        dataset = getattr(entry, "dataset", None)
+        project = self._state.current_project
+        if (
+            not isinstance(selection, StudioSelection)
+            or not isinstance(dataset, SequenceDataset)
+            or project is None
+            or not bool(getattr(project, "is_current_revision", lambda _id: False)(dataset.dataset_id))
+        ):
+            return
+        mime_data = create_project_dataset_mime_data(
+            project_id=str(getattr(project, "project_id", "")),
+            dataset_id=dataset.dataset_id,
+            dataset_type="sequence_dataset",
+        )
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+        drag.exec(Qt.DropAction.CopyAction)
 
 
 class ProjectExplorer(QWidget):
@@ -38,7 +75,7 @@ class ProjectExplorer(QWidget):
         super().__init__()
         self._state = state
         self._controller = controller
-        self._tree = QTreeWidget()
+        self._tree = _ProjectExplorerTree(state)
         self._content_visible = True
         self._tree.setHeaderLabels(["Project Explorer"])
         self._tree.itemSelectionChanged.connect(self._selection_changed)
@@ -144,7 +181,7 @@ class ProjectExplorer(QWidget):
             root.addChild(section)
 
         for entry in project.current_dataset_entries():
-            item = _dataset_item(entry)
+            item = _dataset_item(entry, draggable=isinstance(entry.dataset, SequenceDataset))
             if isinstance(entry.dataset, AlignmentDataset):
                 alignments.addChild(item)
             elif isinstance(entry.dataset, SequenceDataset):
@@ -291,10 +328,12 @@ def _section(label: str) -> QTreeWidgetItem:
     return item
 
 
-def _dataset_item(entry: ProjectDatasetEntry) -> QTreeWidgetItem:
+def _dataset_item(entry: ProjectDatasetEntry, *, draggable: bool = False) -> QTreeWidgetItem:
     item = QTreeWidgetItem([entry.display_name])
     item.setToolTip(0, _dataset_id(entry.dataset))
     item.setData(0, Qt.ItemDataRole.UserRole, StudioSelection.dataset(entry))
+    if draggable:
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
     return item
 
 

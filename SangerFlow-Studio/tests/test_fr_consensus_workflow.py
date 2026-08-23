@@ -23,6 +23,7 @@ configure_qt_plugins()
 from app.app_state import AppState
 from controllers.project_controller import ProjectController
 from core.models import SangerRead
+from core.lineage import RecordRef
 from core.project import Project
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 from persistence.project_bundle import load_project_bundle, save_project_bundle
@@ -38,6 +39,7 @@ from widgets.viewers.fr_consensus_review import (
     ConsensusReviewManagerViewer,
     MultipleConsensusReviewViewer,
     SingleConsensusReviewViewer,
+    ResolvePairDialog,
     build_consensus_sample_rows,
 )
 from widgets.viewers.pair_consensus_chromatogram import PairConsensusChromatogramPanel
@@ -187,6 +189,48 @@ class FRConsensusWorkflowTests(unittest.TestCase):
             "N",
         )
         self.assertIn("consensus_settings", registered.metadata)
+        self.assertEqual(
+            registered.records[0].provenance.source_records,
+            (
+                RecordRef("ab1-reads", "IK345_F.ab1"),
+                RecordRef("ab1-reads", "IK345_R.ab1"),
+            ),
+        )
+
+    def test_hidden_chromatogram_read_remains_a_consensus_pairing_candidate(self) -> None:
+        reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
+        dataset = _dataset(reads)
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        controller.open_project(Project.create("project", "Project").add_dataset(dataset))
+        viewer = ChromatogramViewer(
+            reads,
+            title="Chromatograms",
+            source_object_id=dataset.dataset_id,
+            context=view.viewer_context,
+            source_dataset=dataset,
+        )
+        viewer.set_read_visible("IK345_R.ab1", False)
+
+        with patch(
+            "controllers.project_controller.ConsensusSettingsDialog.exec",
+            return_value=QDialog.DialogCode.Accepted,
+        ):
+            viewer.request_consensus()
+        self.application.processEvents()
+
+        manager = state.active_viewer
+        self.assertIsInstance(manager, ConsensusReviewManagerViewer)
+        self.assertEqual(len(manager.rows), 1)
+        self.assertTrue(manager.rows[0].is_ready)
+        self.assertEqual(
+            manager.rows[0].source_record_provenance.source_records,
+            (
+                RecordRef("ab1-reads", "IK345_F.ab1"),
+                RecordRef("ab1-reads", "IK345_R.ab1"),
+            ),
+        )
 
     def test_single_review_grid_edits_reviewed_row_and_highlights_changes(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
@@ -422,6 +466,13 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         self.assertEqual(registered.source_type, SourceType.REVIEWED_CONSENSUS)
         self.assertEqual(registered.sequence_count, 2)
         self.assertEqual(registered.get_record("IK345").sequence, "ANGC")
+        self.assertEqual(
+            registered.get_record("IK345").provenance.source_records,
+            (
+                RecordRef("ab1-reads", "IK345_F.ab1"),
+                RecordRef("ab1-reads", "IK345_R.ab1"),
+            ),
+        )
         self.assertIn(("IK345", 1), multiple._grid.edited_cells)
         self.assertTrue(state.current_project.has_dataset(registered.dataset_id))
         with TemporaryDirectory() as directory:
@@ -432,6 +483,237 @@ class FRConsensusWorkflowTests(unittest.TestCase):
                 reloaded = loaded.project.get_dataset(registered.dataset_id)
                 self.assertEqual(reloaded.get_record("IK345").sequence, "ANGC")
                 self.assertEqual(reloaded.metadata["workflow"], "F/R Multiple Consensus Review")
+                self.assertEqual(
+                    reloaded.get_record("IK345").provenance.source_records,
+                    (
+                        RecordRef("ab1-reads", "IK345_F.ab1"),
+                        RecordRef("ab1-reads", "IK345_R.ab1"),
+                    ),
+                )
+            finally:
+                loaded.cleanup()
+
+    def test_manager_creates_mixed_output_from_reviewed_pair_and_explicit_orphans(self) -> None:
+        reads = (
+            _read("Pair_F.ab1", "ATGC"),
+            _read("Pair_R.ab1", "GCAT"),
+            _read("Forward_F.ab1", "AAGC"),
+            _read("Reverse_R.ab1", "GACT"),
+            _read("Ambiguous_F.ab1", "ATGC"),
+            _read("Ambiguous_Forward.ab1", "ATGC"),
+        )
+        dataset = _dataset(reads)
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        controller.open_project(Project.create("project", "Project").add_dataset(dataset))
+        rows = build_consensus_sample_rows(reads, source_dataset=dataset)
+        manager = ConsensusReviewManagerViewer(
+            rows,
+            context=view.viewer_context,
+            source_dataset=dataset,
+        )
+
+        pair_index = next(index for index, row in enumerate(rows) if row.sample_id == "Pair")
+        manager._table.selectRow(pair_index)
+        manager.review_selected()
+        single = state.active_viewer
+        self.assertIsInstance(single, SingleConsensusReviewViewer)
+        single.create_and_register_reviewed_dataset()
+
+        forward_index = next(index for index, row in enumerate(rows) if row.sample_id == "Forward")
+        reverse_index = next(index for index, row in enumerate(rows) if row.sample_id == "Reverse")
+        manager._table.selectRow(forward_index)
+        self.assertTrue(manager.include_selected_as_forward_single())
+        manager._table.selectRow(reverse_index)
+        self.assertTrue(manager.include_selected_as_reverse_single())
+
+        with patch(
+            "widgets.viewers.fr_consensus_review.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            output = manager.create_and_register_output_dataset()
+
+        self.assertIsNotNone(output)
+        self.assertEqual(output.source_type, SourceType.DERIVED)
+        self.assertEqual(
+            {record.sequence_id: record.metadata["record_origin"] for record in output.records},
+            {
+                "Pair": "REVIEWED_CONSENSUS",
+                "Forward_F.ab1": "ORPHAN_FORWARD",
+                "Reverse_R.ab1": "ORPHAN_REVERSE",
+            },
+        )
+        self.assertEqual(output.get_record("Forward_F.ab1").sequence, "AAGC")
+        self.assertEqual(output.get_record("Reverse_R.ab1").sequence, "AGTC")
+        self.assertTrue(output.get_record("Reverse_R.ab1").metadata["orientation_normalized"])
+        self.assertEqual(output.get_record("Reverse_R.ab1").metadata["single_read_direction"], "REVERSE")
+        self.assertEqual(
+            output.get_record("Pair").provenance.source_records,
+            (
+                RecordRef("ab1-reads", "Pair_F.ab1"),
+                RecordRef("ab1-reads", "Pair_R.ab1"),
+            ),
+        )
+        self.assertEqual(
+            output.get_record("Reverse_R.ab1").provenance.source_records,
+            (RecordRef("ab1-reads", "Reverse_R.ab1"),),
+        )
+        self.assertEqual(output.metadata["needs_attention_count"], 1)
+        self.assertFalse(any(record.sequence_id.startswith("Ambiguous") for record in output.records))
+
+        self.assertTrue(
+            controller.open_source_chromatogram_for_sequence_editor(
+                SimpleNamespace(dataset=output), "Reverse_R.ab1", 0
+            )
+        )
+        reverse_chromatogram = view.tab_manager.viewer_for_resource_key(
+            f"chromatogram:{output.dataset_id}:Reverse_R.ab1"
+        )
+        self.assertEqual(reverse_chromatogram.selected_read_id, "Reverse_R.ab1")
+        self.assertEqual(reverse_chromatogram.selected_base.raw_trace_position, 3)
+
+    def test_orphan_exclude_does_not_change_source_dataset_or_output(self) -> None:
+        reads = (_read("Forward_F.ab1", "AAGC"),)
+        dataset = _dataset(reads)
+        rows = build_consensus_sample_rows(reads, source_dataset=dataset)
+        manager = ConsensusReviewManagerViewer(rows, source_dataset=dataset)
+
+        manager._table.selectRow(0)
+        self.assertTrue(manager.include_selected_as_forward_single())
+        self.assertTrue(manager.exclude_selected_from_output())
+        self.assertEqual(manager.build_output_records(), ())
+        self.assertEqual(dataset.records[0].sequence, "AAGC")
+        self.assertEqual(dataset.records[0].metadata, {})
+
+    def test_ambiguous_manual_pair_routes_only_selected_candidates_and_preserves_recordrefs(self) -> None:
+        reads = (
+            _read("Sample_F.ab1", "ATGC"),
+            _read("Sample.Forward.ab1", "ATGT"),
+            _read("Sample_R.ab1", "GCAT"),
+        )
+        dataset = _dataset(reads)
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        controller.open_project(Project.create("project", "Project").add_dataset(dataset))
+        row = build_consensus_sample_rows(reads, source_dataset=dataset)[0]
+        self.assertEqual(row.sample.pairing_status.name, "AMBIGUOUS")
+        dialog = ResolvePairDialog(row)
+        self.assertEqual(len(dialog._forward_buttons), 2)
+        self.assertEqual(len(dialog._reverse_buttons), 1)
+        dialog.close()
+        manager = ConsensusReviewManagerViewer((row,), context=view.viewer_context, source_dataset=dataset)
+        resolved = manager.resolve_ambiguous_pair(
+            row,
+            reads[1],
+            reads[2],
+        )
+        self.assertEqual(resolved.pairing_resolution, "MANUAL")
+        self.assertEqual(
+            resolved.source_record_provenance.source_records,
+            (RecordRef("ab1-reads", "Sample.Forward.ab1"), RecordRef("ab1-reads", "Sample_R.ab1")),
+        )
+        manager._table.selectRow(0)
+        manager.review_selected()
+        single = state.active_viewer
+        self.assertIsInstance(single, SingleConsensusReviewViewer)
+        self.assertEqual(single._row.forward_filename, "Sample.Forward.ab1")
+        single.set_base(0, "N")
+        reviewed = single.create_and_register_reviewed_dataset()
+        self.assertEqual(reviewed.records[0].metadata["pairing_resolution"], "MANUAL")
+        self.assertEqual(reviewed.records[0].metadata["source_forward_record_id"], "Sample.Forward.ab1")
+        self.assertEqual(reviewed.records[0].metadata["source_reverse_record_id"], "Sample_R.ab1")
+        output = manager.build_output_records()
+        self.assertEqual(len(output), 1)
+        self.assertEqual(output[0].metadata["pairing_resolution"], "MANUAL")
+        self.assertEqual(manager.output_summary()["needs_attention"], 1)
+
+    def test_ambiguous_candidate_can_be_explicit_single_or_excluded_without_source_mutation(self) -> None:
+        reads = (
+            _read("Sample_F.ab1", "ATGC"),
+            _read("Sample.Forward.ab1", "ATGT"),
+            _read("Sample_R.ab1", "GCAT"),
+        )
+        dataset = _dataset(reads)
+        row = build_consensus_sample_rows(reads, source_dataset=dataset)[0]
+        manager = ConsensusReviewManagerViewer((row,), source_dataset=dataset)
+        self.assertTrue(manager.include_ambiguous_single(row, "FORWARD", reads[1]))
+        output = manager.build_output_records()
+        self.assertEqual(output[0].sequence_id, "Sample.Forward.ab1")
+        self.assertEqual(output[0].metadata["record_origin"], "ORPHAN_FORWARD")
+        manager._table.selectRow(0)
+        self.assertTrue(manager.exclude_selected_from_output())
+        self.assertEqual(manager.build_output_records(), ())
+        self.assertEqual(tuple(record.sequence for record in dataset.records), ("ATGC", "ATGT", "GCAT"))
+
+    def test_manual_pair_resolution_metadata_and_provenance_persist_through_bundle(self) -> None:
+        reads = (
+            _read("Sample_F.ab1", "ATGC"),
+            _read("Sample.Forward.ab1", "ATGT"),
+            _read("Sample_R.ab1", "GCAT"),
+        )
+        dataset = _dataset(reads)
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        controller.open_project(Project.create("project", "Project").add_dataset(dataset))
+        row = build_consensus_sample_rows(reads, source_dataset=dataset)[0]
+        manager = ConsensusReviewManagerViewer((row,), context=view.viewer_context, source_dataset=dataset)
+        manager.resolve_ambiguous_pair(row, reads[1], reads[2])
+        manager._table.selectRow(0)
+        manager.review_selected()
+        single = state.active_viewer
+        single.set_base(0, "N")
+        reviewed = single.create_and_register_reviewed_dataset()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "manual-pair.sangerflow"
+            save_project_bundle(state.current_project, path)
+            loaded = load_project_bundle(path)
+            try:
+                record = loaded.project.get_dataset(reviewed.dataset_id).records[0]
+                self.assertEqual(record.metadata["pairing_resolution"], "MANUAL")
+                self.assertEqual(record.metadata["pairing_resolution_origin"], "USER_SELECTED")
+                self.assertEqual(record.metadata["source_forward_record_id"], "Sample.Forward.ab1")
+                self.assertEqual(record.provenance.source_records, (
+                    RecordRef("ab1-reads", "Sample.Forward.ab1"),
+                    RecordRef("ab1-reads", "Sample_R.ab1"),
+                ))
+            finally:
+                loaded.cleanup()
+
+    def test_mixed_output_provenance_and_metadata_persist_through_bundle(self) -> None:
+        reads = (
+            _read("Forward_F.ab1", "AAGC"),
+            _read("Reverse_R.ab1", "GACT"),
+        )
+        dataset = _dataset(reads)
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        controller.open_project(Project.create("project", "Project").add_dataset(dataset))
+        rows = build_consensus_sample_rows(reads, source_dataset=dataset)
+        manager = ConsensusReviewManagerViewer(rows, context=view.viewer_context, source_dataset=dataset)
+        manager._table.selectRow(0)
+        self.assertTrue(manager.include_selected_as_forward_single())
+        manager._table.selectRow(1)
+        self.assertTrue(manager.include_selected_as_reverse_single())
+        output = controller.create_fr_output_dataset_from_manager(manager)
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "mixed.sangerflow"
+            save_project_bundle(state.current_project, path)
+            loaded = load_project_bundle(path)
+            try:
+                reloaded = loaded.project.get_dataset(output.dataset_id)
+                reverse = reloaded.get_record("Reverse_R.ab1")
+                self.assertEqual(reverse.sequence, "AGTC")
+                self.assertEqual(reverse.metadata["record_origin"], "ORPHAN_REVERSE")
+                self.assertTrue(reverse.metadata["orientation_normalized"])
+                self.assertEqual(
+                    reverse.provenance.source_records,
+                    (RecordRef("ab1-reads", "Reverse_R.ab1"),),
+                )
             finally:
                 loaded.cleanup()
 

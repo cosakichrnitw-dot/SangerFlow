@@ -13,6 +13,7 @@ from app.gui_thread import assert_main_gui_thread
 from app.selection import SelectionKind, StudioSelection
 from controllers.identification_workers import BlastWorker
 from core.ab1_reader import read_ab1
+from core.assembly_view_builders import build_reverse_assembly_view
 from core.alignment_dataset import AlignmentDataset, AlignmentRecord
 from core.models import SangerRead
 from core.blast_filter import BlastResultSelection
@@ -46,6 +47,7 @@ from widgets.viewers.fr_consensus_review import (
     ConsensusSampleRow,
     MultipleConsensusReviewViewer,
     SingleConsensusReviewViewer,
+    build_manual_pair_consensus_row,
     build_consensus_sample_rows,
 )
 from workflow.project_reviewed_consensus import add_reviewed_consensus_dataset_to_project
@@ -443,6 +445,35 @@ class ProjectController(QObject):
             (path,),
             source_label=f"AB1 file: {path.name}",
             source_batch=path.parent.name,
+            source_file_handling=source_file_handling,
+        )
+
+    def open_ab1_files(
+        self,
+        filepaths: tuple[str | Path, ...],
+        *,
+        source_file_handling: str = "reference",
+    ) -> str | None:
+        """Open a same-folder AB1 selection through the normal AB1 workflow.
+
+        Finder can supply multiple selected files while the file dialog supplies
+        one.  Both paths deliberately converge on :meth:`_open_ab1_files`, so
+        copy mode retains the same workspace and iCloud/File Provider preflight.
+        """
+
+        paths = tuple(Path(filepath) for filepath in filepaths)
+        if not paths:
+            raise ValueError("Select at least one AB1 file.")
+        if any(not path.is_file() or path.suffix.lower() not in {".ab1", ".abi"} for path in paths):
+            raise ValueError("AB1 file selection contains a missing or unsupported file.")
+        parent_directories = {path.parent for path in paths}
+        if len(parent_directories) != 1:
+            raise ValueError("Multiple AB1 files must come from the same source folder.")
+        parent = paths[0].parent
+        return self._open_ab1_files(
+            paths,
+            source_label=f"AB1 files: {parent.name}",
+            source_batch=parent.name,
             source_file_handling=source_file_handling,
         )
 
@@ -1107,19 +1138,28 @@ class ProjectController(QObject):
         self,
         viewer: ChromatogramViewer,
     ) -> str | None:
-        """Open the Studio F/R Consensus Review Manager for visible reads."""
+        """Open the Studio F/R Consensus Review Manager for every loaded read."""
 
         if self._tab_manager is None:
             return None
-        reads = tuple(read_view.read for read_view in viewer.visible_read_views)
+        # Visibility is a presentation choice.  It must not silently alter F/R
+        # pairing candidates or scientific consensus input.
+        reads = tuple(read_view.read for read_view in viewer.read_views)
         if not reads:
-            viewer.status_message_changed.emit("At least one visible read is required for consensus.")
+            viewer.status_message_changed.emit("At least one loaded read is required for consensus.")
             return None
         dialog = ConsensusSettingsDialog(read_count=len(reads), parent=viewer)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         settings = dialog.settings()
-        rows = build_consensus_sample_rows(reads, scoring=settings.scoring())
+        source_dataset = getattr(viewer, "source_dataset", None)
+        rows = build_consensus_sample_rows(
+            reads,
+            scoring=settings.scoring(),
+            source_dataset=(
+                source_dataset if isinstance(source_dataset, SequenceDataset) else None
+            ),
+        )
         ready_count = sum(1 for row in rows if row.is_ready)
         if ready_count == 0:
             viewer.status_message_changed.emit(
@@ -1132,10 +1172,9 @@ class ProjectController(QObject):
         manager = ConsensusReviewManagerViewer(
             rows,
             context=self._viewer_context,
-            source_dataset=getattr(viewer, "source_dataset", None),
+            source_dataset=source_dataset,
             settings_metadata=settings.metadata(),
         )
-        source_dataset = getattr(viewer, "source_dataset", None)
         source_id = getattr(source_dataset, "dataset_id", None) or viewer.viewer_id
         return self._tab_manager.open_viewer(
             manager,
@@ -1148,6 +1187,7 @@ class ProjectController(QObject):
         *,
         source_dataset: object | None = None,
         settings_metadata: dict[str, object] | None = None,
+        output_manager: object | None = None,
     ) -> str | None:
         """Open one ready F/R pair in the Studio Single Consensus Review viewer."""
 
@@ -1158,6 +1198,7 @@ class ProjectController(QObject):
             context=self._viewer_context,
             source_dataset=source_dataset,
             settings_metadata=settings_metadata,
+            output_manager=output_manager,
         )
         viewer.open_related_requested.connect(self._handle_consensus_related_request)
         source_id = getattr(source_dataset, "dataset_id", None) or "reads"
@@ -1204,6 +1245,7 @@ class ProjectController(QObject):
                 "Source SequenceDataset must be registered in the current Project before review."
             )
         reviewed_consensus = viewer.create_reviewed_consensus()
+        resolution_metadata = _pairing_resolution_metadata(viewer)
         dataset_id = _unique_dataset_id(
             project,
             f"{source_dataset.dataset_id}_{reviewed_consensus.sample_id}_reviewed_consensus",
@@ -1222,8 +1264,28 @@ class ProjectController(QObject):
                 "original_consensus": reviewed_consensus.original_sequence,
                 "reviewed_consensus": reviewed_consensus.reviewed_sequence,
                 "review_decisions": _review_decisions_metadata(reviewed_consensus),
+                **resolution_metadata,
             },
+            provenance=_require_clear_pair_provenance(viewer, source_dataset),
         )
+        if resolution_metadata:
+            original_record = dataset.records[0]
+            dataset = SequenceDataset(
+                dataset_id=dataset.dataset_id,
+                name=dataset.name,
+                source_type=dataset.source_type,
+                records=(
+                    SequenceRecord(
+                        sequence_id=original_record.sequence_id,
+                        sequence=original_record.sequence,
+                        description=original_record.description,
+                        source_reference=original_record.source_reference,
+                        metadata={**dict(original_record.metadata), **resolution_metadata},
+                        provenance=original_record.provenance,
+                    ),
+                ),
+                metadata=dataset.metadata,
+            )
         updated = add_reviewed_consensus_dataset_to_project(
             project,
             dataset,
@@ -1232,6 +1294,66 @@ class ProjectController(QObject):
             metadata={
                 "added_by": "Studio F/R Consensus Review",
                 "sample_id": reviewed_consensus.sample_id,
+            },
+        )
+        self._state.replace_project(updated, dirty=True)
+        manager = getattr(viewer, "output_manager", None)
+        mark_reviewed = getattr(manager, "mark_pair_reviewed", None)
+        if callable(mark_reviewed):
+            mark_reviewed(reviewed_consensus.sample_id, dataset.records[0])
+        self._last_warnings = ()
+        return dataset
+
+    def create_fr_output_dataset_from_manager(
+        self,
+        manager: ConsensusReviewManagerViewer,
+    ) -> SequenceDataset:
+        """Register an explicit mixed F/R output Dataset from manager choices."""
+
+        project = self._state.current_project
+        if not isinstance(project, Project):
+            raise ValueError("No Project is open.")
+        source_dataset = getattr(manager, "source_dataset", None)
+        if not isinstance(source_dataset, SequenceDataset):
+            raise ValueError("F/R output requires a registered source SequenceDataset.")
+        if not project.has_dataset(source_dataset.dataset_id):
+            raise ValueError("Source SequenceDataset must be registered in the current Project.")
+        records_method = getattr(manager, "build_output_records", None)
+        if not callable(records_method):
+            raise ValueError("F/R output manager cannot build output records.")
+        records = tuple(records_method())
+        if not records:
+            raise ValueError(
+                "Review a pair or explicitly include an orphan single read before creating output."
+            )
+        summary_method = getattr(manager, "output_summary", None)
+        summary = summary_method() if callable(summary_method) else {}
+        if not isinstance(summary, dict):
+            summary = {}
+        dataset_id = _unique_dataset_id(project, f"{source_dataset.dataset_id}_fr_output")
+        dataset = SequenceDataset(
+            dataset_id=dataset_id,
+            name=f"{source_dataset.name} F/R output",
+            source_type=SourceType.DERIVED,
+            records=records,
+            metadata={
+                "parent_dataset_id": source_dataset.dataset_id,
+                "workflow": "F/R Pairing Output",
+                "record_origin_policy": "REVIEWED_CONSENSUS_OR_EXPLICIT_ORPHAN_SINGLE",
+                "reviewed_consensus_count": int(summary.get("reviewed_consensus", 0)),
+                "forward_single_count": int(summary.get("forward_singles", 0)),
+                "reverse_single_count": int(summary.get("reverse_singles", 0)),
+                "excluded_count": int(summary.get("excluded", 0)),
+                "needs_attention_count": int(summary.get("needs_attention", 0)),
+            },
+        )
+        updated = project.add_dataset(
+            dataset,
+            parent_dataset_id=source_dataset.dataset_id,
+            derivation_type=DerivationType.SUBSET_FROM_DATASET,
+            metadata={
+                "added_by": "Studio F/R Pairing Output",
+                "derivation_detail": "REVIEWED_PAIR_AND_EXPLICIT_ORPHAN_SINGLE",
             },
         )
         self._state.replace_project(updated, dirty=True)
@@ -1498,9 +1620,18 @@ class ProjectController(QObject):
             context=self._viewer_context, source_dataset=dataset,
         )
         tab_id = self._tab_manager.open_viewer(chromatogram, resource_key=f"chromatogram:{dataset.dataset_id}:{record_id}")
-        positions = tuple(getattr(source, "base_positions", ()) or ())
-        if 0 <= column < len(positions):
-            chromatogram.jump_to_trace_position(record_id, int(positions[column]))
+        origin = str(record.metadata.get("record_origin", ""))
+        if origin == "ORPHAN_REVERSE":
+            reverse_view = build_reverse_assembly_view(source)
+            if 0 <= column < reverse_view.length:
+                chromatogram.jump_to_trace_position(
+                    source.filename,
+                    int(reverse_view.coordinate_at(column).raw_trace_position),
+                )
+        else:
+            positions = tuple(getattr(source, "base_positions", ()) or ())
+            if 0 <= column < len(positions):
+                chromatogram.jump_to_trace_position(source.filename, int(positions[column]))
         return bool(tab_id)
 
     def _open_reviewed_consensus_source_evidence(
@@ -1538,12 +1669,24 @@ class ProjectController(QObject):
         reads = tuple(reads_from_dataset(parent_dataset))
         if not reads:
             return False
-        rows = build_consensus_sample_rows(reads)
-        row = next(
-            (candidate for candidate in rows if candidate.sample_id == sample_id and candidate.is_ready),
-            None,
-        )
-        if row is None:
+        rows = build_consensus_sample_rows(reads, source_dataset=parent_dataset)
+        row = next((candidate for candidate in rows if candidate.sample_id == sample_id), None)
+        if str(record.metadata.get("pairing_resolution", "")) == "MANUAL":
+            provenance = record.provenance.source_records
+            if row is None or len(provenance) != 2:
+                return False
+            try:
+                forward_source = parent_dataset.get_record(provenance[0].sequence_id).source_reference
+                reverse_source = parent_dataset.get_record(provenance[1].sequence_id).source_reference
+                row = build_manual_pair_consensus_row(
+                    row,
+                    forward_source,
+                    reverse_source,
+                    source_dataset=parent_dataset,
+                )
+            except (KeyError, ValueError):
+                return False
+        elif row is None or not row.is_ready:
             return False
         settings_metadata = dataset.metadata.get("consensus_settings", {})
         if not isinstance(settings_metadata, dict):
@@ -2480,6 +2623,52 @@ def _review_decisions_metadata(reviewed_consensus: object) -> tuple[dict[str, ob
             }
         )
     return tuple(values)
+
+
+def _require_clear_pair_provenance(
+    viewer: SingleConsensusReviewViewer,
+    source_dataset: SequenceDataset,
+) -> RecordProvenance:
+    """Return the exact Forward/Reverse source records for a reviewed pair.
+
+    Pair identity is resolved while the consensus row is built from the source
+    Dataset's in-memory ``SangerRead`` objects. Registration must not fall
+    back to a filename match, because filenames are display data rather than
+    project record identity.
+    """
+
+    provenance = getattr(viewer, "source_record_provenance", None)
+    if not isinstance(provenance, RecordProvenance):
+        raise ValueError(
+            "Reviewed Consensus cannot be registered because its exact Forward/"
+            "Reverse source records are unavailable."
+        )
+    source_records = provenance.source_records
+    if (
+        len(source_records) != 2
+        or any(reference.dataset_id != source_dataset.dataset_id for reference in source_records)
+    ):
+        raise ValueError(
+            "Reviewed Consensus requires one Forward and one Reverse source RecordRef."
+        )
+    return provenance
+
+
+def _pairing_resolution_metadata(viewer: SingleConsensusReviewViewer) -> dict[str, object]:
+    """Persist only an explicit manual-pair decision alongside its RecordRefs."""
+
+    row = getattr(viewer, "_row", None)
+    if getattr(row, "pairing_resolution", "AUTO_CLEAR_PAIR") != "MANUAL":
+        return {"pairing_resolution": "AUTO_CLEAR_PAIR"}
+    provenance = _require_clear_pair_provenance(viewer, getattr(viewer, "source_dataset"))
+    forward, reverse = provenance.source_records
+    return {
+        "pairing_resolution": "MANUAL",
+        "pairing_resolution_origin": "USER_SELECTED",
+        "source_forward_record_id": forward.sequence_id,
+        "source_reverse_record_id": reverse.sequence_id,
+        "source_sample_id": getattr(row, "sample_id", ""),
+    }
 
 
 def _selection_dataset_metadata(

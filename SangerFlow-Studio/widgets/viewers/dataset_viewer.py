@@ -93,6 +93,7 @@ class DatasetViewer(BaseViewer):
         return (
             "dataset.open_chromatogram_viewer",
             "dataset.edit_sequences",
+            "dataset.align_sequences",
             "dataset.open_alignment_viewer",
             "dataset.export_fasta",
             "dataset.export_nexus",
@@ -648,6 +649,20 @@ class DatasetViewerActionProvider:
                 priority=90,
             ),
             ViewerAction(
+                action_id="dataset.align_sequences",
+                label="Align…",
+                tooltip="Create a new AlignmentDataset with MAFFT",
+                callback=lambda: self._align_sequences(viewer),
+                enabled=has_tab_manager
+                and _is_sequence_dataset(dataset)
+                and callable(
+                    getattr(getattr(self._context, "project_controller", None), "align_sequence_dataset_from_editor", None)
+                ),
+                toolbar=True,
+                menu_group="Align",
+                priority=85,
+            ),
+            ViewerAction(
                 action_id="dataset.open_alignment_viewer",
                 label="Open Sequence Editor — Aligned",
                 tooltip="Open this AlignmentDataset in Sequence Editor — Aligned",
@@ -823,6 +838,24 @@ class DatasetViewerActionProvider:
 
         editor = SequenceEditor(dataset, context=context)
         tab_manager.open_viewer(editor, resource_key=f"sequence-editor:{dataset.dataset_id}")
+
+    def _align_sequences(self, viewer: object) -> object | None:
+        """Use the existing Sequence Editor alignment Controller workflow.
+
+        Dataset Viewer is intentionally only an additional entry point.  The
+        settings dialog, MAFFT call, and immutable AlignmentDataset creation
+        remain owned by ``ProjectController``.
+        """
+
+        controller = getattr(self._context, "project_controller", None)
+        method = getattr(controller, "align_sequence_dataset_from_editor", None)
+        if not callable(method):
+            return None
+        try:
+            return method(viewer)
+        except ValueError as error:
+            QMessageBox.warning(viewer, "Align Sequences", str(error))
+            return None
 
     def _open_alignment(self, viewer: object) -> None:
         context = self._context

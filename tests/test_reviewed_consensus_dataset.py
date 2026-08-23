@@ -12,6 +12,7 @@ from core.human_review import (
     ReviewedConsensus,
     apply_review_decisions,
 )
+from core.lineage import RecordProvenance, RecordRef
 from core.sequence_dataset import SourceType
 from workflow.reviewed_consensus_dataset import create_dataset_from_reviewed_consensus
 
@@ -102,6 +103,27 @@ class ReviewedConsensusDatasetTests(unittest.TestCase):
                 name="Invalid count",
                 metadata={"original_read_count": -1},
             )
+
+    def test_preserves_direct_forward_reverse_record_provenance(self) -> None:
+        dataset = create_dataset_from_reviewed_consensus(
+            reviewed_result(),
+            dataset_id="reviewed",
+            name="Reviewed",
+            provenance=RecordProvenance(
+                (
+                    RecordRef("ab1-dataset", "IK345_F"),
+                    RecordRef("ab1-dataset", "IK345_R"),
+                )
+            ),
+        )
+
+        self.assertEqual(
+            dataset.records[0].provenance.source_records,
+            (
+                RecordRef("ab1-dataset", "IK345_F"),
+                RecordRef("ab1-dataset", "IK345_R"),
+            ),
+        )
 
 
 if __name__ == "__main__":

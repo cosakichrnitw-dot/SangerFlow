@@ -4,19 +4,21 @@ from __future__ import annotations
 
 from functools import partial
 
-from PySide6.QtCore import QObject, QTimer, Signal, QSize, Qt
+from PySide6.QtCore import QEvent, QObject, QTimer, Signal, QSize, Qt
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import QMenu, QToolBar
 
 from app.app_state import AppState
 from app.gui_thread import assert_main_gui_thread
 from app.icon_registry import action_icon, studio_icon
+from app.internal_dataset_drag import InternalDatasetDragError, decode_project_dataset_drag
 
 
 class ActionManager(QObject):
     """Expose active-viewer actions through a toolbar."""
 
     actions_rebuilt = Signal()
+    sequence_dataset_dropped_on_align = Signal(str, str)
 
     def __init__(self, state: AppState) -> None:
         super().__init__()
@@ -34,6 +36,12 @@ class ActionManager(QObject):
         self._fixed_actions: dict[str, QAction] = {}
         self._fixed_menus: dict[str, QMenu] = {}
         self._fixed_bindings: dict[str, tuple[object, object, int] | None] = {}
+        self._align_drop_button: object | None = None
+        self._pending_dataset_action: tuple[str, str] | None = None
+        self._pending_action_timer = QTimer(self)
+        self._pending_action_timer.setSingleShot(True)
+        self._pending_action_timer.setInterval(0)
+        self._pending_action_timer.timeout.connect(self._invoke_pending_dataset_action)
         # A toolbar button can still be handling a mouse/hover event when an
         # action opens a replacement Viewer.  Defer removal of its presentation
         # widget until that native event has returned to Qt/Cocoa.
@@ -96,6 +104,78 @@ class ActionManager(QObject):
         self._add_fixed_menu("blast", "BLAST", "blast")
         for key in ("export", "consensus", "align", "blast"):
             self._fixed_actions[key].setEnabled(False)
+        self._install_align_drop_target()
+
+    def _install_align_drop_target(self) -> None:
+        """Make the permanent Align presentation accept internal Dataset IDs."""
+
+        if self._toolbar is None or self._align_drop_button is not None:
+            return
+        button = self._toolbar.widgetForAction(self._fixed_actions["align"])
+        if button is None:
+            return
+        button.setAcceptDrops(True)
+        button.setProperty("sangerflow_align_drop_active", False)
+        button.setStyleSheet(
+            'QToolButton[sangerflow_align_drop_active="true"] {'
+            "background: rgba(44, 116, 180, 38); border: 1px solid #2c74b4; border-radius: 4px;"
+            "}"
+        )
+        button.installEventFilter(self)
+        self._align_drop_button = button
+
+    def eventFilter(self, watched: object, event: object) -> bool:  # noqa: N802 - Qt override
+        """Route only the internal SequenceDataset MIME payload to Align."""
+
+        if watched is not self._align_drop_button:
+            return super().eventFilter(watched, event)
+        event_type = getattr(event, "type", lambda: None)()
+        if event_type in {QEvent.Type.DragEnter, QEvent.Type.DragMove}:
+            if not self.accepts_sequence_dataset_align_drop(event.mimeData()):
+                self._set_align_drop_feedback(False)
+                event.ignore()
+                return True
+            self._set_align_drop_feedback(True)
+            event.acceptProposedAction()
+            return True
+        if event_type == QEvent.Type.DragLeave:
+            self._set_align_drop_feedback(False)
+            event.accept()
+            return True
+        if event_type == QEvent.Type.Drop:
+            self._set_align_drop_feedback(False)
+            try:
+                payload = decode_project_dataset_drag(event.mimeData())
+            except InternalDatasetDragError:
+                event.ignore()
+                return True
+            if not self.accepts_sequence_dataset_align_drop(event.mimeData()):
+                event.ignore()
+                return True
+            self.sequence_dataset_dropped_on_align.emit(payload.project_id, payload.dataset_id)
+            event.acceptProposedAction()
+            return True
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def accepts_sequence_dataset_align_drop(mime_data: object) -> bool:
+        """Return whether an internal MIME payload represents a SequenceDataset."""
+
+        try:
+            return decode_project_dataset_drag(mime_data).dataset_type == "sequence_dataset"
+        except InternalDatasetDragError:
+            return False
+
+    def _set_align_drop_feedback(self, active: bool) -> None:
+        button = self._align_drop_button
+        if button is None:
+            return
+        if bool(button.property("sangerflow_align_drop_active")) == bool(active):
+            return
+        button.setProperty("sangerflow_align_drop_active", bool(active))
+        button.style().unpolish(button)
+        button.style().polish(button)
+        button.update()
 
     def _add_fixed_action(self, key: str, label: str, icon_name: str, callback: object, *, enabled: bool = True) -> None:
         assert self._toolbar is not None
@@ -189,6 +269,34 @@ class ActionManager(QObject):
         self._refresh_fixed_workflow_actions(viewer, generation)
         if requested_generation == self._requested_generation:
             self.actions_rebuilt.emit()
+            if self._pending_dataset_action is not None:
+                self._pending_action_timer.start()
+
+    def request_dataset_action(self, action_id: str, dataset_id: str) -> None:
+        """Invoke a normal active-viewer action after its deferred refresh.
+
+        This is used by an internal drag target after the controller has made
+        the dropped Dataset the active selection.  It never invokes scientific
+        workflows from a drop event itself.
+        """
+
+        self._pending_dataset_action = (action_id, dataset_id)
+        self.update_for_active_viewer(self._state.active_viewer)
+
+    def _invoke_pending_dataset_action(self) -> None:
+        pending = self._pending_dataset_action
+        self._pending_dataset_action = None
+        if pending is None:
+            return
+        action_id, dataset_id = pending
+        viewer = self._state.active_viewer
+        dataset = getattr(viewer, "dataset", None)
+        if getattr(dataset, "dataset_id", None) != dataset_id:
+            return
+        action = self._actions.get(action_id)
+        if action is None or not action.isEnabled():
+            return
+        action.trigger()
 
     def _invoke_viewer_action(
         self,
@@ -240,7 +348,7 @@ class ActionManager(QObject):
         )
         self._populate_fixed_menu(
             "align",
-            ("chromatogram.align", "sequence_editor.align", "dataset.open_alignment_viewer", "alignment.review_chromatograms"),
+            ("dataset.align_sequences", "chromatogram.align", "sequence_editor.align", "dataset.open_alignment_viewer", "alignment.review_chromatograms"),
             viewer=viewer,
             generation=generation,
         )

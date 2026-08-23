@@ -34,7 +34,10 @@ class PairingStatus(str, Enum):
     """Reason a sample is or is not safe for automatic pair assembly."""
 
     CLEAR_PAIR = "CLEAR_PAIR"
-    SINGLE_FORWARD = "SINGLE_FORWARD"
+    # ``SINGLE_FORWARD`` remains a compatibility alias for callers using the
+    # pre-v1.0 spelling.  New code receives the explicit orphan semantic.
+    ORPHAN_FORWARD = "ORPHAN_FORWARD"
+    SINGLE_FORWARD = "ORPHAN_FORWARD"
     SINGLE_UNSPECIFIED = "SINGLE_UNSPECIFIED"
     ORPHAN_REVERSE = "ORPHAN_REVERSE"
     AMBIGUOUS = "AMBIGUOUS"
@@ -57,7 +60,33 @@ class Sample:
     forward_read: Optional[SangerRead] = None
     reverse_read: Optional[SangerRead] = None
     unspecified_reads: tuple[SangerRead, ...] = ()
+    forward_candidates: tuple[SangerRead, ...] = ()
+    reverse_candidates: tuple[SangerRead, ...] = ()
+    unspecified_candidates: tuple[SangerRead, ...] = ()
     reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Expose every classified input read without changing legacy fields.
+
+        ``forward_read`` and ``reverse_read`` remain the unique, automatically
+        safe pair members.  Candidate tuples preserve all reads for a future
+        explicit-resolution UI, including ambiguous groups.
+        """
+
+        forward = _unique_reads(
+            self.forward_candidates or ((self.forward_read,) if self.forward_read else ())
+        )
+        reverse = _unique_reads(
+            self.reverse_candidates or ((self.reverse_read,) if self.reverse_read else ())
+        )
+        unspecified = _unique_reads(
+            self.unspecified_candidates or self.unspecified_reads
+        )
+        object.__setattr__(self, "forward_candidates", forward)
+        object.__setattr__(self, "reverse_candidates", reverse)
+        object.__setattr__(self, "unspecified_candidates", unspecified)
+        # Retain the original public attribute for backwards compatibility.
+        object.__setattr__(self, "unspecified_reads", unspecified)
 
     @property
     def reads(self) -> tuple[SangerRead, ...]:
@@ -65,13 +94,9 @@ class Sample:
 
         reads = []
 
-        if self.forward_read is not None:
-            reads.append(self.forward_read)
-
-        if self.reverse_read is not None:
-            reads.append(self.reverse_read)
-
-        reads.extend(self.unspecified_reads)
+        reads.extend(self.forward_candidates)
+        reads.extend(self.reverse_candidates)
+        reads.extend(self.unspecified_candidates)
 
         return tuple(reads)
 
@@ -135,7 +160,9 @@ def classify_reads_by_filename(reads: Iterable[SangerRead]) -> list[Sample]:
             }
 
         group = groups[group_key]
-        group[orientation.value.casefold()].append(read)
+        bucket = group[orientation.value.casefold()]
+        if not any(existing is read for existing in bucket):
+            bucket.append(read)
 
     samples = []
 
@@ -175,14 +202,17 @@ def _build_sample(
             pairing_status=PairingStatus.CLEAR_PAIR,
             forward_read=forward_reads[0],
             reverse_read=reverse_reads[0],
+            forward_candidates=forward_reads,
+            reverse_candidates=reverse_reads,
         )
 
     if len(forward_reads) == 1 and not reverse_reads and not unspecified_reads:
         return Sample(
             sample_id=sample_id,
             classification=SampleClassification.SINGLE,
-            pairing_status=PairingStatus.SINGLE_FORWARD,
+            pairing_status=PairingStatus.ORPHAN_FORWARD,
             forward_read=forward_reads[0],
+            forward_candidates=forward_reads,
         )
 
     if not forward_reads and not reverse_reads and len(unspecified_reads) == 1:
@@ -191,14 +221,16 @@ def _build_sample(
             classification=SampleClassification.SINGLE,
             pairing_status=PairingStatus.SINGLE_UNSPECIFIED,
             unspecified_reads=unspecified_reads,
+            unspecified_candidates=unspecified_reads,
         )
 
     if not forward_reads and len(reverse_reads) == 1 and not unspecified_reads:
         return Sample(
             sample_id=sample_id,
-            classification=SampleClassification.AMBIGUOUS,
+            classification=SampleClassification.SINGLE,
             pairing_status=PairingStatus.ORPHAN_REVERSE,
             reverse_read=reverse_reads[0],
+            reverse_candidates=reverse_reads,
             reasons=("Reverse read has no matching Forward read.",),
         )
 
@@ -226,5 +258,20 @@ def _build_sample(
         forward_read=forward_reads[0] if len(forward_reads) == 1 else None,
         reverse_read=reverse_reads[0] if len(reverse_reads) == 1 else None,
         unspecified_reads=unspecified_reads,
+        forward_candidates=forward_reads,
+        reverse_candidates=reverse_reads,
+        unspecified_candidates=unspecified_reads,
         reasons=tuple(reasons),
     )
+
+
+def _unique_reads(reads: Iterable[SangerRead]) -> tuple[SangerRead, ...]:
+    """Return one stable entry per input object identity."""
+
+    unique: list[SangerRead] = []
+    for read in reads:
+        if not isinstance(read, SangerRead):
+            raise ValueError("sample candidates must contain SangerRead values")
+        if not any(existing is read for existing in unique):
+            unique.append(read)
+    return tuple(unique)

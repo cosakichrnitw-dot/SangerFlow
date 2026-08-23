@@ -14,6 +14,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QApplication,
+    QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
     QHeaderView,
     QCheckBox,
     QLabel,
@@ -23,6 +26,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -35,9 +39,16 @@ from app.icon_registry import studio_icon
 from core.consensus_review_session import ConsensusReviewSession
 from core.consensus_v2_1 import ConsensusV21Scoring, build_pair_consensus_v2_1
 from core.human_review import DecisionType, HumanReviewDecision
+from core.lineage import RecordProvenance, RecordRef
 from core.pair_alignment import align_pair
 from core.reviewed_consensus import build_reviewed_consensus
-from core.samples import PairingStatus, Sample, classify_reads_by_filename
+from core.reverse_complement import build_reverse_complement_view
+from core.samples import (
+    PairingStatus,
+    Sample,
+    SampleClassification,
+    classify_reads_by_filename,
+)
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 from core.trimming import trim_sequence
 from widgets.sequence_grid import SequenceGridRow, SequenceGridWidget
@@ -88,6 +99,9 @@ class ConsensusSampleRow:
     conflict_count: int | None = None
     unresolved_count: int | None = None
     view_model: SingleConsensusViewModel | None = None
+    source_record_provenance: RecordProvenance | None = None
+    pairing_resolution: str = "AUTO_CLEAR_PAIR"
+    pairing_resolution_origin: str | None = None
     error: str | None = None
 
     @property
@@ -96,7 +110,10 @@ class ConsensusSampleRow:
 
 
 def build_consensus_sample_rows(
-    reads: object, *, scoring: ConsensusV21Scoring | None = None,
+    reads: object,
+    *,
+    scoring: ConsensusV21Scoring | None = None,
+    source_dataset: SequenceDataset | None = None,
 ) -> tuple[ConsensusSampleRow, ...]:
     """Classify reads and build review inputs for clear F/R pairs.
 
@@ -152,9 +169,163 @@ def build_consensus_sample_rows(
                 conflict_count=conflict_count,
                 unresolved_count=unresolved_count,
                 view_model=view_model,
+                source_record_provenance=pair_record_provenance(
+                    sample, source_dataset
+                ),
             )
         )
     return tuple(rows)
+
+
+def pair_record_provenance(
+    sample: Sample,
+    source_dataset: SequenceDataset | None,
+) -> RecordProvenance | None:
+    """Resolve a clear pair to direct source records without filename matching.
+
+    ``SangerRead`` object identity is the only bridge used here.  A filename is
+    presentation data and must never decide which source record supplied a
+    reviewed consensus.
+    """
+
+    if source_dataset is None:
+        return None
+    if not sample.is_clear_pair:
+        return None
+    forward_read = sample.forward_read
+    reverse_read = sample.reverse_read
+    if forward_read is None or reverse_read is None:
+        return None
+
+    records_by_source_identity: dict[int, list[SequenceRecord]] = {}
+    for record in source_dataset.records:
+        source = record.source_reference
+        if source is not None:
+            records_by_source_identity.setdefault(id(source), []).append(record)
+
+    resolved: list[RecordRef] = []
+    for read in (forward_read, reverse_read):
+        matches = records_by_source_identity.get(id(read), ())
+        if len(matches) != 1:
+            return None
+        resolved.append(
+            RecordRef(source_dataset.dataset_id, matches[0].sequence_id)
+        )
+    return RecordProvenance(tuple(resolved))
+
+
+def _source_record_for_read(
+    source_dataset: SequenceDataset,
+    read: object,
+) -> SequenceRecord:
+    """Resolve one source record strictly through its in-memory read object."""
+
+    matches = tuple(
+        record
+        for record in source_dataset.records
+        if record.source_reference is read
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            "F/R output cannot resolve one exact source record for the selected read."
+        )
+    return matches[0]
+
+
+def _output_orphan_record(
+    row: ConsensusSampleRow,
+    source_dataset: SequenceDataset,
+    direction: str,
+    *,
+    read: object | None = None,
+) -> SequenceRecord:
+    """Create one explicit single-read output without mutating its AB1 source."""
+
+    if direction == "FORWARD":
+        read = read or row.sample.forward_read
+        expected_status = PairingStatus.ORPHAN_FORWARD
+    elif direction == "REVERSE":
+        read = read or row.sample.reverse_read
+        expected_status = PairingStatus.ORPHAN_REVERSE
+    else:  # pragma: no cover - internal caller validation
+        raise ValueError("orphan output direction must be FORWARD or REVERSE")
+    is_explicit_ambiguous_candidate = (
+        row.sample.pairing_status is PairingStatus.AMBIGUOUS
+        and any(
+            candidate is read
+            for candidate in (
+                row.sample.forward_candidates
+                if direction == "FORWARD"
+                else row.sample.reverse_candidates
+            )
+        )
+    )
+    if read is None or (
+        row.sample.pairing_status is not expected_status
+        and not is_explicit_ambiguous_candidate
+    ):
+        raise ValueError("selected row is not the requested orphan direction")
+    source_record = _source_record_for_read(source_dataset, read)
+    if direction == "REVERSE":
+        # The existing validated reverse-complement view supplies assembly
+        # orientation while retaining exact source trace coordinates.
+        sequence = build_reverse_complement_view(read).sequence
+        normalized = True
+    else:
+        sequence = source_record.sequence
+        normalized = False
+    return SequenceRecord(
+        sequence_id=source_record.sequence_id,
+        sequence=sequence,
+        description=source_record.description,
+        source_reference=read,
+        metadata={
+            **dict(source_record.metadata),
+            "record_origin": f"ORPHAN_{direction}",
+            "source_sample_id": row.sample_id,
+            "orientation_normalized": normalized,
+            "single_read_direction": direction,
+            "source_read_filename": read.filename,
+        },
+        provenance=RecordProvenance(
+            (RecordRef(source_dataset.dataset_id, source_record.sequence_id),)
+        ),
+    )
+
+
+def _output_reviewed_pair_record(
+    row: ConsensusSampleRow,
+    reviewed_record: SequenceRecord,
+    *,
+    resolution_row: ConsensusSampleRow | None = None,
+) -> SequenceRecord:
+    """Carry a human-reviewed pair record into the mixed final output."""
+
+    if len(reviewed_record.provenance.source_records) != 2:
+        raise ValueError("reviewed pair output requires Forward and Reverse RecordProvenance")
+    resolution_metadata: dict[str, object] = {}
+    if resolution_row is not None and resolution_row.pairing_resolution == "MANUAL":
+        refs = resolution_row.source_record_provenance.source_records if resolution_row.source_record_provenance else ()
+        resolution_metadata = {
+            "pairing_resolution": "MANUAL",
+            "pairing_resolution_origin": "USER_SELECTED",
+            "source_forward_record_id": refs[0].sequence_id if len(refs) == 2 else "",
+            "source_reverse_record_id": refs[1].sequence_id if len(refs) == 2 else "",
+        }
+    return SequenceRecord(
+        sequence_id=reviewed_record.sequence_id,
+        sequence=reviewed_record.sequence,
+        description=reviewed_record.description,
+        source_reference=reviewed_record.source_reference,
+        metadata={
+            **dict(reviewed_record.metadata),
+            "record_origin": "REVIEWED_CONSENSUS",
+            "source_sample_id": row.sample_id,
+            "orientation_normalized": True,
+            **resolution_metadata,
+        },
+        provenance=reviewed_record.provenance,
+    )
 
 
 def build_fr_single_consensus_view_model(
@@ -182,6 +353,125 @@ def build_fr_single_consensus_view_model(
     )
 
 
+def build_manual_pair_consensus_row(
+    ambiguous_row: ConsensusSampleRow,
+    forward_read: object,
+    reverse_read: object,
+    *,
+    source_dataset: SequenceDataset | None,
+    scoring: ConsensusV21Scoring | None = None,
+) -> ConsensusSampleRow:
+    """Build one review row from the two reads explicitly selected by a user.
+
+    This deliberately projects the selected candidates into the existing clear
+    pair review input.  It never changes filename classification, PairAlignment,
+    or consensus-v2.1; unselected candidates remain on the original row.
+    """
+
+    sample = ambiguous_row.sample
+    if sample.pairing_status is not PairingStatus.AMBIGUOUS:
+        raise ValueError("manual pair resolution is available only for ambiguous samples")
+    if not any(candidate is forward_read for candidate in sample.forward_candidates):
+        raise ValueError("selected Forward read is not a candidate for this sample")
+    if not any(candidate is reverse_read for candidate in sample.reverse_candidates):
+        raise ValueError("selected Reverse read is not a candidate for this sample")
+    selected_sample = Sample(
+        sample_id=sample.sample_id,
+        classification=SampleClassification.PAIR,
+        pairing_status=PairingStatus.CLEAR_PAIR,
+        forward_read=forward_read,
+        reverse_read=reverse_read,
+        forward_candidates=(forward_read,),
+        reverse_candidates=(reverse_read,),
+    )
+    view_model = build_fr_single_consensus_view_model(selected_sample, scoring=scoring)
+    provenance = pair_record_provenance(selected_sample, source_dataset)
+    if source_dataset is not None and provenance is None:
+        raise ValueError("manual pair resolution cannot resolve exact source RecordRefs")
+    unresolved_count = view_model.consensus_sequence.count("N")
+    conflict_count = sum(_is_conflict_column(column) for column in view_model.columns)
+    return ConsensusSampleRow(
+        sample=selected_sample,
+        sample_id=sample.sample_id,
+        forward_filename=getattr(forward_read, "filename", "—"),
+        reverse_filename=getattr(reverse_read, "filename", "—"),
+        status="Resolved Pair — review required",
+        consensus_length=len(view_model.consensus_sequence),
+        conflict_count=conflict_count,
+        unresolved_count=unresolved_count,
+        view_model=view_model,
+        source_record_provenance=provenance,
+        pairing_resolution="MANUAL",
+        pairing_resolution_origin="USER_SELECTED",
+    )
+
+
+class ResolvePairDialog(QDialog):
+    """Minimal, explicit candidate chooser for one ambiguous F/R sample."""
+
+    def __init__(self, row: ConsensusSampleRow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        if row.sample.pairing_status is not PairingStatus.AMBIGUOUS:
+            raise ValueError("Resolve Pair requires an ambiguous sample")
+        self._row = row
+        self.resolution: str | None = None
+        self.setWindowTitle("Resolve Forward / Reverse Pair")
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Sample: {row.sample_id}"))
+        layout.addWidget(QLabel("Forward candidates:"))
+        self._forward_group = QButtonGroup(self)
+        self._forward_buttons: dict[QRadioButton, object] = {}
+        for index, read in enumerate(row.sample.forward_candidates):
+            button = QRadioButton(getattr(read, "filename", f"Forward {index + 1}"))
+            self._forward_group.addButton(button)
+            self._forward_buttons[button] = read
+            layout.addWidget(button)
+        layout.addWidget(QLabel("Reverse candidates:"))
+        self._reverse_group = QButtonGroup(self)
+        self._reverse_buttons: dict[QRadioButton, object] = {}
+        for index, read in enumerate(row.sample.reverse_candidates):
+            button = QRadioButton(getattr(read, "filename", f"Reverse {index + 1}"))
+            self._reverse_group.addButton(button)
+            self._reverse_buttons[button] = read
+            layout.addWidget(button)
+        if row.sample.unspecified_candidates:
+            names = ", ".join(read.filename for read in row.sample.unspecified_candidates)
+            layout.addWidget(QLabel(f"Unspecified candidates (not auto-classified): {names}"))
+        self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self._resolve_button = self._buttons.addButton("Resolve as Pair", QDialogButtonBox.ButtonRole.AcceptRole)
+        self._forward_single_button = self._buttons.addButton("Use as Forward Single", QDialogButtonBox.ButtonRole.ActionRole)
+        self._reverse_single_button = self._buttons.addButton("Use as Reverse Single", QDialogButtonBox.ButtonRole.ActionRole)
+        self._exclude_button = self._buttons.addButton("Exclude from Output", QDialogButtonBox.ButtonRole.DestructiveRole)
+        self._buttons.rejected.connect(self.reject)
+        self._resolve_button.clicked.connect(lambda: self._finish("PAIR"))
+        self._forward_single_button.clicked.connect(lambda: self._finish("FORWARD_SINGLE"))
+        self._reverse_single_button.clicked.connect(lambda: self._finish("REVERSE_SINGLE"))
+        self._exclude_button.clicked.connect(lambda: self._finish("EXCLUDE"))
+        self._forward_group.buttonToggled.connect(self._update_buttons)
+        self._reverse_group.buttonToggled.connect(self._update_buttons)
+        layout.addWidget(self._buttons)
+        self._update_buttons()
+
+    @property
+    def selected_forward(self) -> object | None:
+        button = self._forward_group.checkedButton()
+        return self._forward_buttons.get(button) if button is not None else None
+
+    @property
+    def selected_reverse(self) -> object | None:
+        button = self._reverse_group.checkedButton()
+        return self._reverse_buttons.get(button) if button is not None else None
+
+    def _update_buttons(self, *_args: object) -> None:
+        self._resolve_button.setEnabled(self.selected_forward is not None and self.selected_reverse is not None)
+        self._forward_single_button.setEnabled(self.selected_forward is not None)
+        self._reverse_single_button.setEnabled(self.selected_reverse is not None)
+
+    def _finish(self, resolution: str) -> None:
+        self.resolution = resolution
+        self.accept()
+
+
 class ConsensusReviewManagerViewer(BaseViewer):
     """Lightweight Studio manager for F/R consensus candidates."""
 
@@ -197,6 +487,13 @@ class ConsensusReviewManagerViewer(BaseViewer):
         self._source_dataset = source_dataset
         self._settings_metadata = dict(settings_metadata or {})
         self._rows = tuple(rows)
+        # Output membership is deliberately independent from table selection
+        # and chromatogram visibility.  Orphans require an explicit include.
+        self._included_single_directions: dict[str, str] = {}
+        self._included_single_reads: dict[str, tuple[str, object]] = {}
+        self._reviewed_pair_records: dict[str, SequenceRecord] = {}
+        self._manual_pair_rows: dict[str, ConsensusSampleRow] = {}
+        self._output_excluded_sample_ids: set[str] = set()
         self._action_provider = ConsensusReviewManagerActionProvider()
         source_id = getattr(source_dataset, "dataset_id", None)
         super().__init__(
@@ -229,10 +526,17 @@ class ConsensusReviewManagerViewer(BaseViewer):
 
     @property
     def supported_actions(self) -> tuple[str, ...]:
-        return ("fr_consensus.review_selected",)
+        return (
+            "fr_consensus.review_selected",
+            "fr_consensus.resolve_pair",
+            "fr_consensus.include_forward_single",
+            "fr_consensus.include_reverse_single",
+            "fr_consensus.exclude_from_output",
+            "fr_consensus.create_output_dataset",
+        )
 
     def review_selected(self) -> object | None:
-        selected = self._selected_ready_row()
+        selected = self._selected_effective_ready_row()
         if selected is None:
             self.status_message_changed.emit("Select one Ready F/R pair to review.")
             return None
@@ -243,8 +547,69 @@ class ConsensusReviewManagerViewer(BaseViewer):
                 selected,
                 source_dataset=self._source_dataset,
                 settings_metadata=self._settings_metadata,
+                output_manager=self,
             )
         self.open_related_requested.emit({"action": "REVIEW_CONSENSUS", "row": selected})
+        return None
+
+    def resolve_selected_pair(self) -> object | None:
+        row = self._selected_row()
+        if row is None or row.sample.pairing_status is not PairingStatus.AMBIGUOUS:
+            self.status_message_changed.emit("Select an ambiguous sample to resolve its Forward/Reverse pair.")
+            return None
+        dialog = ResolvePairDialog(row, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        if dialog.resolution == "PAIR":
+            try:
+                resolved = self.resolve_ambiguous_pair(
+                    row, dialog.selected_forward, dialog.selected_reverse
+                )
+            except ValueError as error:
+                self.status_message_changed.emit(str(error))
+                return None
+            return self._open_resolved_pair_for_review(resolved)
+        if dialog.resolution == "FORWARD_SINGLE":
+            return self.include_ambiguous_single(row, "FORWARD", dialog.selected_forward)
+        if dialog.resolution == "REVERSE_SINGLE":
+            return self.include_ambiguous_single(row, "REVERSE", dialog.selected_reverse)
+        if dialog.resolution == "EXCLUDE":
+            return self.exclude_selected_from_output()
+        return None
+
+    def resolve_ambiguous_pair(
+        self,
+        row: ConsensusSampleRow,
+        forward_read: object,
+        reverse_read: object,
+    ) -> ConsensusSampleRow:
+        """Persist one explicit candidate choice in manager state and review it."""
+
+        resolved = build_manual_pair_consensus_row(
+            row,
+            forward_read,
+            reverse_read,
+            source_dataset=self._source_dataset if isinstance(self._source_dataset, SequenceDataset) else None,
+        )
+        self._manual_pair_rows[row.sample_id] = resolved
+        self._included_single_directions.pop(row.sample_id, None)
+        self._included_single_reads.pop(row.sample_id, None)
+        self._output_excluded_sample_ids.discard(row.sample_id)
+        self._populate_table()
+        self.status_message_changed.emit(f"Manual F/R pair selected: {row.sample_id}. Review is required.")
+        return resolved
+
+    def _open_resolved_pair_for_review(self, row: ConsensusSampleRow) -> object | None:
+        controller = getattr(self._context, "project_controller", None)
+        open_method = getattr(controller, "open_single_fr_consensus_review", None)
+        if callable(open_method):
+            return open_method(
+                row,
+                source_dataset=self._source_dataset,
+                settings_metadata=self._settings_metadata,
+                output_manager=self,
+            )
+        self.open_related_requested.emit({"action": "REVIEW_CONSENSUS", "row": row})
         return None
 
     def _build_ui(self) -> None:
@@ -274,6 +639,7 @@ class ConsensusReviewManagerViewer(BaseViewer):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self._table.itemDoubleClicked.connect(lambda _item: self.review_selected())
+        self._table.itemSelectionChanged.connect(self._selected_row_changed)
         layout.addWidget(self._table, 1)
         footer = QHBoxLayout()
         self._review_button = QPushButton("Review")
@@ -282,8 +648,23 @@ class ConsensusReviewManagerViewer(BaseViewer):
         self._review_all_button.setEnabled(len(self.ready_rows) >= 2)
         self._review_all_button.setToolTip("Open Multiple Consensus Review for all ready F/R pairs.")
         self._review_all_button.clicked.connect(self.review_all)
+        self._resolve_pair_button = QPushButton("Resolve Pair…")
+        self._resolve_pair_button.clicked.connect(self.resolve_selected_pair)
+        self._include_forward_button = QPushButton("Include as Forward Single")
+        self._include_forward_button.clicked.connect(self.include_selected_as_forward_single)
+        self._include_reverse_button = QPushButton("Include as Reverse Single")
+        self._include_reverse_button.clicked.connect(self.include_selected_as_reverse_single)
+        self._exclude_output_button = QPushButton("Exclude from Output")
+        self._exclude_output_button.clicked.connect(self.exclude_selected_from_output)
+        self._create_output_button = QPushButton("Create Output Dataset…")
+        self._create_output_button.clicked.connect(self.create_and_register_output_dataset)
         footer.addWidget(self._review_button)
         footer.addWidget(self._review_all_button)
+        footer.addWidget(self._resolve_pair_button)
+        footer.addWidget(self._include_forward_button)
+        footer.addWidget(self._include_reverse_button)
+        footer.addWidget(self._exclude_output_button)
+        footer.addWidget(self._create_output_button)
         footer.addStretch(1)
         layout.addLayout(footer)
         self._populate_table()
@@ -295,33 +676,232 @@ class ConsensusReviewManagerViewer(BaseViewer):
                 row.sample_id,
                 row.forward_filename,
                 row.reverse_filename,
-                row.status,
+                self._display_status(row),
                 "—" if row.consensus_length is None else str(row.consensus_length),
                 "—" if row.conflict_count is None else str(row.conflict_count),
                 "—" if row.unresolved_count is None else str(row.unresolved_count),
-                row.error or "",
+                self._display_note(row),
             )
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if row.is_ready:
-                    item.setData(Qt.ItemDataRole.UserRole, row.sample_id)
-                else:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                item.setData(Qt.ItemDataRole.UserRole, row.sample_id)
                 self._table.setItem(row_index, column_index, item)
         for row_index, row in enumerate(self._rows):
             if row.is_ready:
                 self._table.selectRow(row_index)
                 break
+        self._update_output_controls()
 
     def _selected_ready_row(self) -> ConsensusSampleRow | None:
+        row = self._selected_row()
+        return row if row is not None and row.is_ready else None
+
+    def _selected_effective_ready_row(self) -> ConsensusSampleRow | None:
+        row = self._selected_row()
+        if row is None:
+            return None
+        return self._manual_pair_rows.get(row.sample_id) or (row if row.is_ready else None)
+
+    def _display_status(self, row: ConsensusSampleRow) -> str:
+        if row.sample_id in self._output_excluded_sample_ids:
+            return "Excluded"
+        if row.sample_id in self._manual_pair_rows:
+            return "Resolved Pair — review required"
+        if row.sample_id in self._included_single_directions:
+            direction = self._included_single_directions[row.sample_id].title()
+            return f"Resolved as {direction} Single"
+        return row.status
+
+    def _display_note(self, row: ConsensusSampleRow) -> str:
+        if row.sample_id in self._manual_pair_rows:
+            resolved = self._manual_pair_rows[row.sample_id]
+            unused = (
+                len(row.sample.forward_candidates) - 1
+                + len(row.sample.reverse_candidates) - 1
+                + len(row.sample.unspecified_candidates)
+            )
+            suffix = f"; {unused} unused candidate(s) need attention" if unused else ""
+            return f"Manual: {resolved.forward_filename} + {resolved.reverse_filename}{suffix}"
+        return row.error or ""
+
+    def _selected_row(self) -> ConsensusSampleRow | None:
         selected_ranges = self._table.selectedRanges()
         if not selected_ranges:
             return None
         row_index = selected_ranges[0].topRow()
         if not 0 <= row_index < len(self._rows):
             return None
-        row = self._rows[row_index]
-        return row if row.is_ready else None
+        return self._rows[row_index]
+
+    def _selected_row_changed(self) -> None:
+        self._update_output_controls()
+
+    @property
+    def output_excluded_sample_ids(self) -> frozenset[str]:
+        return frozenset(self._output_excluded_sample_ids)
+
+    @property
+    def included_single_directions(self) -> dict[str, str]:
+        return dict(self._included_single_directions)
+
+    def mark_pair_reviewed(self, sample_id: str, record: SequenceRecord) -> None:
+        """Register one human-reviewed pair as an output candidate."""
+
+        if not isinstance(record, SequenceRecord):
+            raise ValueError("reviewed pair output must be a SequenceRecord")
+        row = next((candidate for candidate in self._rows if candidate.sample_id == sample_id), None)
+        if row is None or not (row.is_ready or sample_id in self._manual_pair_rows):
+            raise ValueError("only a resolved F/R pair can become a reviewed output candidate")
+        self._reviewed_pair_records[sample_id] = record
+        self._output_excluded_sample_ids.discard(sample_id)
+        self.status_message_changed.emit(f"Reviewed pair ready for output: {sample_id}")
+
+    def include_selected_as_forward_single(self) -> bool:
+        return self._include_selected_single(PairingStatus.ORPHAN_FORWARD, "FORWARD")
+
+    def include_selected_as_reverse_single(self) -> bool:
+        return self._include_selected_single(PairingStatus.ORPHAN_REVERSE, "REVERSE")
+
+    def _include_selected_single(self, status: PairingStatus, direction: str) -> bool:
+        row = self._selected_row()
+        if row is None or row.sample.pairing_status is not status:
+            self.status_message_changed.emit(
+                f"Select a {direction.title()} orphan to include it as a single read."
+            )
+            return False
+        self._included_single_directions[row.sample_id] = direction
+        self._included_single_reads.pop(row.sample_id, None)
+        self._output_excluded_sample_ids.discard(row.sample_id)
+        self.status_message_changed.emit(
+            f"Included as {direction.title()} single: {row.sample_id}"
+        )
+        return True
+
+    def include_ambiguous_single(
+        self, row: ConsensusSampleRow, direction: str, read: object | None
+    ) -> bool:
+        """Explicitly route one selected ambiguous candidate through Pass 3B output."""
+
+        candidates = (
+            row.sample.forward_candidates if direction == "FORWARD" else row.sample.reverse_candidates
+        )
+        if row.sample.pairing_status is not PairingStatus.AMBIGUOUS or not any(candidate is read for candidate in candidates):
+            raise ValueError(f"selected {direction.title()} read is not an ambiguous-pair candidate")
+        self._manual_pair_rows.pop(row.sample_id, None)
+        self._reviewed_pair_records.pop(row.sample_id, None)
+        self._included_single_directions[row.sample_id] = direction
+        self._included_single_reads[row.sample_id] = (direction, read)
+        self._output_excluded_sample_ids.discard(row.sample_id)
+        self._populate_table()
+        self.status_message_changed.emit(f"Included selected candidate as {direction.title()} single: {row.sample_id}")
+        return True
+
+    def exclude_selected_from_output(self) -> bool:
+        row = self._selected_row()
+        if row is None:
+            return False
+        self._included_single_directions.pop(row.sample_id, None)
+        self._included_single_reads.pop(row.sample_id, None)
+        self._manual_pair_rows.pop(row.sample_id, None)
+        self._reviewed_pair_records.pop(row.sample_id, None)
+        self._output_excluded_sample_ids.add(row.sample_id)
+        self.status_message_changed.emit(f"Excluded from output: {row.sample_id}")
+        return True
+
+    def output_summary(self) -> dict[str, int]:
+        forward = sum(direction == "FORWARD" for direction in self._included_single_directions.values())
+        reverse = sum(direction == "REVERSE" for direction in self._included_single_directions.values())
+        needs_attention = sum(self._row_needs_attention(row) for row in self._rows)
+        return {
+            "reviewed_consensus": len(self._reviewed_pair_records),
+            "forward_singles": forward,
+            "reverse_singles": reverse,
+            "excluded": len(self._output_excluded_sample_ids),
+            "needs_attention": needs_attention,
+            "manual_pairs": len(self._manual_pair_rows),
+        }
+
+    def _row_needs_attention(self, row: ConsensusSampleRow) -> bool:
+        if row.sample_id in self._output_excluded_sample_ids:
+            return False
+        if row.sample_id in self._manual_pair_rows:
+            return bool(
+                len(row.sample.forward_candidates) > 1
+                or len(row.sample.reverse_candidates) > 1
+                or row.sample.unspecified_candidates
+            )
+        return row.sample.pairing_status in (PairingStatus.AMBIGUOUS, PairingStatus.SINGLE_UNSPECIFIED)
+
+    def build_output_records(self) -> tuple[SequenceRecord, ...]:
+        """Build final output records from explicit pair/orphan choices only."""
+
+        if not isinstance(self._source_dataset, SequenceDataset):
+            raise ValueError("F/R output requires a registered source SequenceDataset.")
+        records: list[SequenceRecord] = []
+        for row in self._rows:
+            if row.sample_id in self._output_excluded_sample_ids:
+                continue
+            reviewed = self._reviewed_pair_records.get(row.sample_id)
+            if reviewed is not None:
+                records.append(
+                    _output_reviewed_pair_record(
+                        row,
+                        reviewed,
+                        resolution_row=self._manual_pair_rows.get(row.sample_id),
+                    )
+                )
+                continue
+            direction = self._included_single_directions.get(row.sample_id)
+            if direction == "FORWARD":
+                read = self._included_single_reads.get(row.sample_id, (None, None))[1]
+                records.append(_output_orphan_record(row, self._source_dataset, direction, read=read))
+            elif direction == "REVERSE":
+                read = self._included_single_reads.get(row.sample_id, (None, None))[1]
+                records.append(_output_orphan_record(row, self._source_dataset, direction, read=read))
+        sequence_ids = tuple(record.sequence_id for record in records)
+        collisions = tuple(sorted({value for value in sequence_ids if sequence_ids.count(value) > 1}))
+        if collisions:
+            raise ValueError("F/R output record ID collision: " + ", ".join(collisions))
+        return tuple(records)
+
+    def create_and_register_output_dataset(self) -> SequenceDataset | None:
+        summary = self.output_summary()
+        if summary["needs_attention"]:
+            response = QMessageBox.question(
+                self,
+                "Create F/R Output Dataset",
+                "Unresolved pairing rows will not be included:\n\n"
+                f"Reviewed Consensus: {summary['reviewed_consensus']}\n"
+                f"  Manually resolved pairs: {summary['manual_pairs']}\n"
+                f"Forward Singles: {summary['forward_singles']}\n"
+                f"Reverse Singles: {summary['reverse_singles']}\n"
+                f"Excluded: {summary['excluded']}\n"
+                f"Needs Attention: {summary['needs_attention']}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return None
+        controller = getattr(self._context, "project_controller", None)
+        create_method = getattr(controller, "create_fr_output_dataset_from_manager", None)
+        if not callable(create_method):
+            self.status_message_changed.emit("F/R output registration is not configured.")
+            return None
+        try:
+            dataset = create_method(self)
+        except ValueError as error:
+            self.status_message_changed.emit(str(error))
+            return None
+        self.status_message_changed.emit(f"F/R Output Dataset created: {dataset.dataset_id}")
+        return dataset
+
+    def _update_output_controls(self) -> None:
+        row = self._selected_row()
+        status = row.sample.pairing_status if row is not None else None
+        self._include_forward_button.setEnabled(status is PairingStatus.ORPHAN_FORWARD)
+        self._include_reverse_button.setEnabled(status is PairingStatus.ORPHAN_REVERSE)
+        self._resolve_pair_button.setEnabled(status is PairingStatus.AMBIGUOUS)
+        self._exclude_output_button.setEnabled(row is not None)
 
     def review_all(self) -> object | None:
         ready_rows = self.ready_rows
@@ -348,6 +928,7 @@ class SingleConsensusReviewViewer(BaseViewer):
         context: object | None = None,
         source_dataset: object | None = None,
         settings_metadata: dict[str, object] | None = None,
+        output_manager: object | None = None,
     ) -> None:
         if not isinstance(row, ConsensusSampleRow) or row.view_model is None:
             raise ValueError("SingleConsensusReviewViewer requires a ready consensus row")
@@ -355,7 +936,15 @@ class SingleConsensusReviewViewer(BaseViewer):
         self._view_model = row.view_model
         self._context = context
         self._source_dataset = source_dataset
+        self._source_record_provenance = (
+            row.source_record_provenance
+            or pair_record_provenance(
+                row.sample,
+                source_dataset if isinstance(source_dataset, SequenceDataset) else None,
+            )
+        )
         self._settings_metadata = dict(settings_metadata or {})
+        self._output_manager = output_manager
         self._reviewed_bases = list(self._view_model.consensus_sequence)
         self._selected_position = 0
         self._conflict_positions = tuple(
@@ -394,6 +983,14 @@ class SingleConsensusReviewViewer(BaseViewer):
     @property
     def source_dataset(self) -> object | None:
         return self._source_dataset
+
+    @property
+    def source_record_provenance(self) -> RecordProvenance | None:
+        return self._source_record_provenance
+
+    @property
+    def output_manager(self) -> object | None:
+        return self._output_manager
 
     @property
     def settings_metadata(self) -> dict[str, object]:
@@ -819,6 +1416,16 @@ class MultipleConsensusReviewViewer(BaseViewer):
         self._rows = ready_rows
         self._context = context
         self._source_dataset = source_dataset
+        self._source_record_provenance_by_sample = {
+            row.sample_id: (
+                row.source_record_provenance
+                or pair_record_provenance(
+                    row.sample,
+                    source_dataset if isinstance(source_dataset, SequenceDataset) else None,
+                )
+            )
+            for row in self._rows
+        }
         self._reviewed_sequences = {
             row.sample_id: list(row.view_model.consensus_sequence)
             for row in self._rows
@@ -1240,6 +1847,10 @@ class MultipleConsensusReviewViewer(BaseViewer):
                         if base != row.view_model.consensus_sequence[index]
                     ),
                 },
+                provenance=(
+                    self._source_record_provenance_by_sample[row.sample_id]
+                    or RecordProvenance()
+                ),
             )
             for row in self._rows
             if row.sample_id not in self._output_excluded_sample_ids
@@ -1678,6 +2289,34 @@ class ConsensusReviewManagerActionProvider:
                 callback=getattr(viewer, "review_all"),
                 enabled=len(getattr(viewer, "ready_rows", ())) >= 2,
             ),
+            ViewerAction(
+                action_id="fr_consensus.resolve_pair",
+                label="Resolve Pair…",
+                tooltip="Explicitly select one Forward and one Reverse candidate",
+                callback=getattr(viewer, "resolve_selected_pair"),
+            ),
+            ViewerAction(
+                action_id="fr_consensus.include_forward_single",
+                label="Include as Forward Single",
+                tooltip="Explicitly include the selected Forward orphan in the next output Dataset",
+                callback=getattr(viewer, "include_selected_as_forward_single"),
+            ),
+            ViewerAction(
+                action_id="fr_consensus.include_reverse_single",
+                label="Include as Reverse Single",
+                tooltip="Explicitly include the selected Reverse orphan in assembly orientation",
+                callback=getattr(viewer, "include_selected_as_reverse_single"),
+            ),
+            ViewerAction(
+                action_id="fr_consensus.exclude_from_output",
+                label="Exclude from Output",
+                callback=getattr(viewer, "exclude_selected_from_output"),
+            ),
+            ViewerAction(
+                action_id="fr_consensus.create_output_dataset",
+                label="Create Output Dataset…",
+                callback=getattr(viewer, "create_and_register_output_dataset"),
+            ),
         )
 
 
@@ -1837,7 +2476,7 @@ class MultipleConsensusReviewActionProvider:
 def _status_label(sample: Sample) -> str:
     if sample.pairing_status is PairingStatus.CLEAR_PAIR:
         return "Ready"
-    if sample.pairing_status is PairingStatus.SINGLE_FORWARD:
+    if sample.pairing_status is PairingStatus.ORPHAN_FORWARD:
         return "Incomplete — Forward only"
     if sample.pairing_status is PairingStatus.ORPHAN_REVERSE:
         return "Incomplete — Reverse only"
