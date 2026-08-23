@@ -843,7 +843,7 @@ class ChromatogramViewerActionProvider:
             ViewerAction(
                 action_id="chromatogram.open_quality_report",
                 label="Quality Report",
-                tooltip="Open a Tkinter-style per-read quality report",
+                tooltip="Open the per-read quality report",
                 callback=getattr(viewer, "open_quality_report"),
                 enabled=dock_manager is not None,
                 toolbar=True,

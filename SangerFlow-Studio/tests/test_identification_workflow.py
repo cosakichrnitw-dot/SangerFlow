@@ -186,7 +186,7 @@ class IdentificationWorkflowTests(unittest.TestCase):
         )
         view.close()
 
-    def test_dataset_and_alignment_actions_expose_run_blast_and_bold(self) -> None:
+    def test_dataset_and_alignment_actions_expose_blast_but_not_bold_online(self) -> None:
         dataset = SequenceDataset.from_sequence_pairs(
             "imported",
             "Imported",

@@ -1,5 +1,9 @@
 # SangerFlow ロードマップ
 
+> **Status note:** this roadmap contains historical Tkinter and BOLD planning
+> material. For v1.0, SangerFlow Studio/PySide6 is the official GUI, and BOLD
+> online identification is not a supported user-facing workflow.
+
 ## この文書の目的
 
 この文書は、実装済みの機能と今後の計画を混同せず、長期的な開発判断のために整理する。現在のコードを唯一の事実基準とし、実装状況、バージョン、依存関係、テスト状態は[CURRENT_STATUS.md](CURRENT_STATUS.md)を正とする。この文書の将来項目はすべて「計画」または「検討候補」である。

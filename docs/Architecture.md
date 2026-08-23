@@ -1,5 +1,10 @@
 # SangerFlow アーキテクチャ
 
+> **Legacy note:** Tkinter-specific sections in this historical architecture
+> document describe `gui/` only. v1.0's official GUI is PySide6 SangerFlow
+> Studio; use [CURRENT_STATUS.md](CURRENT_STATUS.md) for the current support
+> boundary.
+
 ## この文書の目的
 
 この文書は、現在のリポジトリ内のPythonコードを唯一の事実基準として、SangerFlowの実装済み構成、データの流れ、外部連携、および結合の強い箇所を記録する。READMEや既存文書は補助資料であり、コードと矛盾する場合はコードを正とする。確認された不整合は[CURRENT_STATUS.md](CURRENT_STATUS.md)に集約する。将来の構想は実装事実と区別して[ロードマップ](Roadmap.md)に記録する。

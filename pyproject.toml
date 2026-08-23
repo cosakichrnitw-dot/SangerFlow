@@ -27,5 +27,5 @@ application_name = "SangerFlow-Studio"
 
 [tool.pytest.ini_options]
 markers = [
-    "legacy_tk: legacy Tkinter native GUI smoke test; excluded from the Beta headless gate",
+    "legacy_tk: legacy Tkinter native GUI smoke test; excluded from the v1.0 release gate",
 ]

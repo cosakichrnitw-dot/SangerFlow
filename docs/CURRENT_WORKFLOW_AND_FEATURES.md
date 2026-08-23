@@ -1,5 +1,9 @@
 # SangerFlow: 現在のWorkflowと機能
 
+> **Legacy note:** the Tkinter Main Viewer material below is retained for
+> reference. v1.0 users should use SangerFlow Studio (PySide6); BOLD online
+> identification is not supported in the v1.0 user workflow.
+
 ## この文書の目的
 
 この文書は、現在のSangerFlowで研究者が実行できる処理、各GUIの役割、coreの責務、および未接続・prototypeの範囲を一か所に整理する。**現在のPythonコードを唯一の事実基準**とする。既存の設計文書は将来方針を含むため、コードと矛盾する場合は本書の実装状態を優先する。

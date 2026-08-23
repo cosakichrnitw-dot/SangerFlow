@@ -1,5 +1,11 @@
 # SangerFlow BLAST機能の現在の実装状況
 
+> **v1.0 support note (2026-08-23):** This historical audit predates the
+> current Studio workflow. SangerFlow Studio's NCBI BLAST online and official
+> NCBI website/XML-import routes are supported in v1.0. BOLD online
+> identification is not supported in v1.0. References below to Tkinter GUI
+> routes are legacy/reference material, not user-facing v1.0 instructions.
+
 ## 0. 調査条件と結論
 
 - 調査日: 2026-08-04

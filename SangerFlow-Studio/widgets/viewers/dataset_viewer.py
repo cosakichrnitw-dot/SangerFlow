@@ -804,7 +804,7 @@ class DatasetViewerActionProvider:
             ViewerAction(
                 action_id="dataset.open_quality_report",
                 label="Quality Report",
-                tooltip="Open a Tkinter-style quality report for AB1-backed records",
+                tooltip="Open the quality report for AB1-backed records",
                 callback=lambda: self._open_quality_report(viewer),
                 enabled=has_tab_manager
                 and dataset is not None

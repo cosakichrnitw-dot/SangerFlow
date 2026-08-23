@@ -1,5 +1,8 @@
 # Core Architecture
 
+> **Legacy note:** references to the Tkinter GUI are retained as historical
+> implementation context. v1.0's supported GUI is PySide6 SangerFlow Studio.
+
 Version: 1.0
 Status: Stable
 Last Updated: 2026-07-31
