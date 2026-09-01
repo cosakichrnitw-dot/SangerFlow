@@ -1,6 +1,8 @@
 from pathlib import Path
 import unittest
 
+import pytest
+
 from core.ab1_reader import read_ab1
 from core.assembly_models import (
     AlignmentColumn,
@@ -49,6 +51,7 @@ def make_terminal_gap_alignment():
 
 
 class ConsensusReviewBridgeTests(unittest.TestCase):
+    @pytest.mark.private_validation
     def test_known_validation_pair_preserves_both_trace_coordinates(self):
         forward_read = read_ab1(
             REPOSITORY_ROOT / "validation_data" / "IK345_COl-1_F.ab1"

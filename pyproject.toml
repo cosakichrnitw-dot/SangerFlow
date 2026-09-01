@@ -28,4 +28,5 @@ application_name = "SangerFlow-Studio"
 [tool.pytest.ini_options]
 markers = [
     "legacy_tk: legacy Tkinter native GUI smoke test; excluded from the v1.0 release gate",
+    "private_validation: local validation test requiring non-public research data; excluded from the public release gate",
 ]

@@ -26,7 +26,7 @@ jobs:
         # Tkinter widget smoke tests are marked legacy_tk and require an
         # explicitly provisioned native GUI host. Headless tests in those
         # same modules remain part of the normal v1.0 release gate.
-        run: python -m pytest -q tests -m "not legacy_tk"
+        run: python -m pytest -q tests -m "not legacy_tk and not private_validation"
       - name: Studio offscreen tests
         run: python -m pytest -q SangerFlow-Studio/tests
       - name: Compile Python sources
