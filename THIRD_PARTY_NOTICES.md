@@ -25,4 +25,7 @@ NCBI service guidance and terms.
 Before distributing a packaged application, verify the exact bundled versions
 and include every license text and notice required by the chosen dependency
 artifacts. In particular, binary Qt/PySide6 and numerical packages can carry
-additional upstream notices beyond this summary.
+additional upstream notices beyond this summary. The maintained macOS build
+recipe copies this notice inventory, the installed distribution metadata and
+available license files for shipped Python packages, Python's license text, and
+the GNU GPLv3/LGPLv3 texts into `Contents/Resources/Legal/`.
