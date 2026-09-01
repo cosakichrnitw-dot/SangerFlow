@@ -32,7 +32,7 @@ The result is `dist/SangerFlow Studio.app`.
 - `config/qc_threshold.json`
 - `SangerFlow-Studio/resources/icons/`
 - `Contents/Resources/Legal/`, containing the SangerFlow license, third-party
-  notice inventory, installed-package metadata/license files, and the GNU
+  notice inventory, bundled Python PSF license, installed-package metadata/license files, and the GNU
   GPLv3/LGPLv3 texts used for the Qt/PySide6 community distribution
 
 Scientific source data, AB1 files, Excel files, projects, local settings,

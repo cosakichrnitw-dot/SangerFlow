@@ -38,11 +38,8 @@ datas = [
     (str(REPOSITORY_ROOT / "PROJECT_ASSETS_NOTICE.md"), "Legal"),
     (str(LEGAL_ROOT / "GPL-3.0.txt"), "Legal/Qt"),
     (str(LEGAL_ROOT / "LGPL-3.0.txt"), "Legal/Qt"),
+    (str(LEGAL_ROOT / "Python-PSF-LICENSE.txt"), "Legal"),
 ]
-
-python_license = Path(sys.base_prefix) / "LICENSE.txt"
-if python_license.is_file():
-    datas.append((str(python_license), "Legal/Python"))
 
 for package_name in (
     "PySide6",
