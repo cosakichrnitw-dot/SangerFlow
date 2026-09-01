@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import unittest
 
@@ -18,9 +19,6 @@ from core.consensus_review_bridge import create_review_evidence
 from core.consensus_v2_1 import build_pair_consensus_v2_1
 from core.pair_alignment import align_pair
 from core.trimming import trim_sequence
-
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def make_view(orientation, sequence, quality, filename):
@@ -53,12 +51,10 @@ def make_terminal_gap_alignment():
 class ConsensusReviewBridgeTests(unittest.TestCase):
     @pytest.mark.private_validation
     def test_known_validation_pair_preserves_both_trace_coordinates(self):
-        forward_read = read_ab1(
-            REPOSITORY_ROOT / "validation_data" / "IK345_COl-1_F.ab1"
-        )
-        reverse_read = read_ab1(
-            REPOSITORY_ROOT / "validation_data" / "IK345_COl-1_R.ab1"
-        )
+        forward_path = self._private_validation_path("SANGERFLOW_PRIVATE_FORWARD_AB1")
+        reverse_path = self._private_validation_path("SANGERFLOW_PRIVATE_REVERSE_AB1")
+        forward_read = read_ab1(forward_path)
+        reverse_read = read_ab1(reverse_path)
         trim_sequence(forward_read)
         trim_sequence(reverse_read)
         alignment = align_pair(
@@ -70,12 +66,20 @@ class ConsensusReviewBridgeTests(unittest.TestCase):
         column = alignment.column_at(628)
 
         evidence = create_review_evidence(
-            decision, alignment, sample_identifier="IK345_COl-1", v1_base="N"
+            decision,
+            alignment,
+            sample_identifier=os.environ.get(
+                "SANGERFLOW_PRIVATE_SAMPLE_IDENTIFIER", forward_path.stem
+            ),
+            v1_base="N",
         )
 
-        self.assertEqual(evidence.sample_identifier, "IK345_COl-1")
-        self.assertEqual(evidence.forward_read_identifier, "IK345_COl-1_F.ab1")
-        self.assertEqual(evidence.reverse_read_identifier, "IK345_COl-1_R.ab1")
+        self.assertEqual(
+            evidence.sample_identifier,
+            os.environ.get("SANGERFLOW_PRIVATE_SAMPLE_IDENTIFIER", forward_path.stem),
+        )
+        self.assertEqual(evidence.forward_read_identifier, forward_path.name)
+        self.assertEqual(evidence.reverse_read_identifier, reverse_path.name)
         self.assertEqual(evidence.forward_raw_index, column.forward.raw_index)
         self.assertEqual(evidence.reverse_raw_index, column.reverse.raw_index)
         self.assertEqual(
@@ -93,6 +97,15 @@ class ConsensusReviewBridgeTests(unittest.TestCase):
             column.reverse.raw_trace_position,
         )
         self.assertEqual(evidence.v1_base, "N")
+
+    @staticmethod
+    def _private_validation_path(variable_name: str) -> Path:
+        value = os.environ.get(variable_name)
+        if not value:
+            pytest.skip(
+                f"Set {variable_name} to run this local private-validation test."
+            )
+        return Path(value)
 
     def test_gap_side_has_no_coordinates_or_jump_target(self):
         alignment = make_terminal_gap_alignment()
