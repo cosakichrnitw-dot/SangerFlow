@@ -3,7 +3,7 @@
 All notable user-facing changes are documented here. SangerFlow follows a
 feature-freeze release process before a numbered public release.
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-09-01
 
 ### Added
 
