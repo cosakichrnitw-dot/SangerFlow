@@ -4,9 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sangerflow"
-version = "1.0.0.dev0"
+version = "1.0.0"
 description = "Sanger sequencing analysis workflows and SangerFlow Studio"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Chihiro Osaki", email = "cosaki.chr.nitw@gmail.com" }]
 dependencies = [
     "biopython==1.87",
     "certifi==2026.6.17",
@@ -16,6 +18,10 @@ dependencies = [
     "pyqtgraph==0.14.0",
     "colorama==0.4.6",
 ]
+
+[project.urls]
+Repository = "https://github.com/cosakichrnitw-dot/SangerFlow"
+Issues = "https://github.com/cosakichrnitw-dot/SangerFlow/issues"
 
 [tool.setuptools]
 packages = ["core", "workflow", "export", "metadata", "persistence", "tools", "gui"]

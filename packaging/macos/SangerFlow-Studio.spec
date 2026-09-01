@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller recipe for the local SangerFlow Studio macOS Beta bundle."""
+"""PyInstaller recipe for the local SangerFlow Studio macOS v1.0 bundle."""
 
 from pathlib import Path
 
@@ -62,8 +62,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleDisplayName": "SangerFlow Studio",
         "CFBundleName": "SangerFlow Studio",
-        "CFBundleShortVersionString": "0.9 Beta",
-        "CFBundleVersion": "0.9.0",
+        "CFBundleShortVersionString": "1.0.0",
+        "CFBundleVersion": "1.0.0",
         "NSHighResolutionCapable": True,
     },
 )

@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible problem in SangerFlow Studio or the public workflow.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not upload AB1/ABI files, unpublished sequences, `.sangerflow` projects,
+        credentials, or sensitive research metadata. Use a minimal public-safe example.
+  - type: input
+    id: version
+    attributes:
+      label: SangerFlow version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: launch-mode
+    attributes:
+      label: How did you run SangerFlow?
+      options:
+        - Packaged application
+        - Source / Python environment
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Safe logs or screenshots (optional)
+      description: Remove paths, sequence data, credentials, and sensitive metadata first.

@@ -1,5 +1,10 @@
 # Tkinter to SangerFlow-Studio Migration Inventory
 
+> **Historical migration record.** This document captures an earlier migration
+> audit and is not current v1.0 user documentation. The PySide6 Studio is the
+> supported interface; see the repository README and `docs/Workflow.md` for
+> current instructions.
+
 This document records the current migration state from the existing Tkinter GUI
 to the PySide6 SangerFlow-Studio shell.  The Tkinter implementation is treated
 as the source of truth for existing GUI workflow behavior.

@@ -1,5 +1,10 @@
 # SangerFlow v1.0 current status
 
+## Release state
+
+SangerFlow is in the v1.0 release-preparation / feature-freeze phase. The
+official researcher-facing GUI is **SangerFlow Studio (PySide6/Qt)**.
+
 ## Support boundary
 
 | Item | v1.0 status |
@@ -18,9 +23,9 @@ The legacy Tkinter code and BOLD models, parsers, exporters, and tests remain
 in the repository for compatibility, historical reference, and possible future
 work. They are not part of the v1.0 researcher-facing release surface.
 
-## Normal launch
+## Source launch
 
-Use the packaged Studio application when available. For source development:
+For source development:
 
 ```bash
 cd SangerFlow-Studio
@@ -33,27 +38,28 @@ Tkinter interface.
 
 ## Test tiers
 
-| Tier | Purpose | v1.0 release gate |
+| Tier | Purpose | Public v1.0 release gate |
 |---|---|---|
 | Core/headless | Scientific models, workflow, persistence, import/export | Yes |
 | Studio Qt | PySide6 GUI in offscreen mode plus platform smoke checks | Yes |
 | `legacy_tk` | Native Tkinter widget tests | No; opt-in only |
+| `private_validation` | Local validation requiring non-public research data | No; opt-in only |
 | BOLD internal | BOLD result/filter/parser compatibility | Kept, but does not imply v1.0 online BOLD support |
 
 The CI marker `legacy_tk` separates native Tk widget tests from the normal
-headless release gate. A native Tk run remains available to maintain the
-legacy implementation without making it a v1.0 release requirement.
+headless release gate. `private_validation` keeps local, non-public validation
+outside a clean public clone. Neither tier should be required to release v1.0.
 
 ## External dependencies
 
 - MAFFT must be installed separately for alignment.
 - NCBI BLAST requires network access and compliance with NCBI usage guidance.
-- The macOS packaged application is distributed separately from source builds;
-  packaging does not bundle research data or project files.
+- No public signed/notarized macOS application has been released yet. The
+  maintained packaging recipe does not bundle research data, project files, or
+  MAFFT.
 
 ## Legacy documentation
 
-Documents whose primary subject is `gui/`, `python -m gui.app`, or Tkinter
-windows should be treated as legacy/reference documentation. Candidates for a
-future `docs/legacy/` move include older GUI-specific documents and historical
-status reports; they are retained in place during v1.0 to avoid breaking links.
+Documents whose primary subject is `gui/`, `python -m gui.app`, Tkinter, or a
+historical design proposal are reference material rather than current v1.0 user
+documentation. Current user instructions are linked from the repository README.

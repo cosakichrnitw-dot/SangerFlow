@@ -1,5 +1,9 @@
 # SangerFlow-Studio GUI Architecture Review
 
+> **Historical architecture review.** This document records a pre-production
+> Studio design assessment. It is retained for development context and must not
+> be read as a statement of the current v1.0 feature surface.
+
 ## Scope
 
 This review audits the current `SangerFlow-Studio/` GUI foundation before

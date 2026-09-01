@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use SangerFlow in your work, please cite it using the metadata below."
+title: "SangerFlow"
+type: software
+version: 1.0.0
+authors:
+  - given-names: Chihiro
+    family-names: Osaki
+    email: cosaki.chr.nitw@gmail.com
+repository-code: "https://github.com/cosakichrnitw-dot/SangerFlow"
+license: MIT
