@@ -33,19 +33,28 @@ __pycache__/
 
 
 # =========================
-# Sequence outputs
+# Private research data and local workspaces
+# =========================
+# Keep public-safe fixtures and documentation examples possible under
+# tests/fixtures/public/ and docs/examples/; do not globally ignore text
+# sequence formats such as FASTA, NEXUS, or PHYLIP.
+
+/input/
+/validation_data/
+/research-data/
+/private-data/
+/local-data/
+/workspace/
+/scratch/
+
+# =========================
+# Generated analysis outputs and local project bundles
 # =========================
 
-*.fas
-*.fasta
-*.aln
-
-
-# =========================
-# Analysis outputs
-# =========================
-
-output/
+/output/
+/exports/
+/reports/
+*.sangerflow
 
 # =========================
 # Local packaging artifacts
@@ -68,7 +77,8 @@ dist/
 # =========================
 
 *_blast_identification.xlsx
-SangerFlow-Studio/*.sangerflow
+*_blast_identification.csv
+*_blast_identification.tsv
 
 # =========================
 # Local Python environments
