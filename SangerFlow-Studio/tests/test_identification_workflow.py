@@ -74,6 +74,8 @@ class IdentificationWorkflowTests(unittest.TestCase):
         self.assertIsInstance(state.active_viewer, BlastResultStudioViewer)
 
         viewer = state.active_viewer
+        self.assertIn("BLAST completed. Stored in Project Results", viewer._project_storage_feedback.text())
+        self.assertIn("Save Project to persist it to disk.", viewer._project_storage_feedback.text())
         viewer._scientific_name.setText("Rhynchobatus springeri")
         viewer._min_identity.setText("98")
         viewer._min_coverage.setText("95")
@@ -114,6 +116,32 @@ class IdentificationWorkflowTests(unittest.TestCase):
                 )
             finally:
                 loaded.cleanup()
+        view.close()
+
+    def test_blast_xml_import_feedback_identifies_project_results_storage(self) -> None:
+        dataset = SequenceDataset.from_sequence_pairs(
+            "reviewed-consensus", "Reviewed Consensus", SourceType.REVIEWED_CONSENSUS,
+            (("IK345", "ATGC"),),
+        )
+        state, controller, view = _studio(Project.create("project", "Project").add_dataset(dataset))
+        imported = BlastResultDataset(
+            result_id="web-xml-result",
+            name="Imported Web BLAST",
+            parent_dataset_id=dataset.dataset_id,
+            analysis_mode=BlastAnalysisMode.IDENTIFICATION,
+            database="nt",
+            hits=(BlastHit("IK345", "ACC-1", "Rhynchobatus springeri", "Rhynchobatus springeri", 99.0, 100.0, 1e-20, 4, "nt"),),
+        )
+        with patch(
+            "controllers.project_controller.import_ncbi_blast_xml",
+            return_value=(imported, object()),
+        ):
+            controller.import_ncbi_blast_xml_for_dataset(dataset, "/tmp/example.xml")
+
+        self.assertTrue(state.current_project.has_analysis_result("web-xml-result"))
+        self.assertIsInstance(state.active_viewer, BlastResultStudioViewer)
+        self.assertIn("NCBI BLAST XML imported. Stored in Project Results", state.active_viewer._project_storage_feedback.text())
+        self.assertIn("Save Project to persist it to disk.", state.active_viewer._project_storage_feedback.text())
         view.close()
 
     def test_alignment_dataset_runs_bold_with_ungapped_query_and_creates_selection_dataset(self) -> None:

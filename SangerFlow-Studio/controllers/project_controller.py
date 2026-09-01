@@ -72,6 +72,7 @@ from services.metadata_template import (
     write_project_metadata_excel_template,
 )
 from services.application_settings import resolve_studio_mafft_executable
+from widgets.mafft_setup_dialog import ensure_studio_mafft_available
 from services.ab1_source_preflight import preflight_ab1_copy_sources
 from services.project_workspace import (
     ProjectWorkspace,
@@ -153,6 +154,7 @@ class ProjectController(QObject):
         self._mafft_executable_resolver = (
             mafft_executable_resolver or resolve_studio_mafft_executable
         )
+        self._uses_default_mafft_resolver = mafft_executable_resolver is None
 
     def __del__(self) -> None:
         temporary_directory = getattr(self, "_temporary_repository_directory", None)
@@ -234,13 +236,43 @@ class ProjectController(QObject):
         )
         return project
 
-    def close_project(self) -> None:
-        """Close all non-persistent viewer state before resetting the Studio shell."""
+    def prepare_project_close(self) -> object | None:
+        """Collect all viewer close choices without mutating Project state."""
 
-        close_all = getattr(self._tab_manager, "close_all", None)
-        if callable(close_all):
-            close_all()
+        prepare_close_all = getattr(self._tab_manager, "prepare_close_all", None)
+        if callable(prepare_close_all):
+            return prepare_close_all()
+        return None
+
+    def commit_project_close_changes(self, close_plan: object) -> bool:
+        """Apply accepted editor saves while preserving their tabs temporarily."""
+
+        commit_close_changes = getattr(self._tab_manager, "commit_close_changes", None)
+        return bool(callable(commit_close_changes) and commit_close_changes(close_plan))
+
+    def finalize_project_close_tabs(self, close_plan: object) -> bool:
+        """Remove viewer tabs after the close transaction has fully committed."""
+
+        finalize_close_all = getattr(self._tab_manager, "finalize_close_all", None)
+        return bool(callable(finalize_close_all) and finalize_close_all(close_plan))
+
+    def finalize_project_close(self) -> None:
+        """Clear current Project state after close prompts and persistence finish."""
+
         self._state.close_project()
+
+    def close_project(self) -> bool:
+        """Compatibility close path for callers without a MainWindow prompt."""
+
+        close_plan = self.prepare_project_close()
+        if close_plan is None:
+            return False
+        if not self.commit_project_close_changes(close_plan):
+            return False
+        if not self.finalize_project_close_tabs(close_plan):
+            return False
+        self.finalize_project_close()
+        return True
 
     def current_workspace(self) -> ProjectWorkspace | None:
         """Return the optional filesystem workspace next to the active Bundle."""
@@ -353,7 +385,13 @@ class ProjectController(QObject):
             )
         return entry
 
-    def _open_revision_viewer(self, dataset: object) -> None:
+    def _open_revision_viewer(
+        self,
+        dataset: object,
+        *,
+        saved_feedback: str | None = None,
+        continue_editing: bool = False,
+    ) -> None:
         """Focus the newly-created immutable revision when the Studio is configured."""
 
         if (
@@ -362,10 +400,21 @@ class ProjectController(QObject):
             or self._tab_manager is None
         ):
             return
-        viewer = self._viewer_registry.create_viewer_for(dataset, self._viewer_context)
-        resource_id = getattr(dataset, "alignment_id", None) or getattr(dataset, "dataset_id", None)
-        prefix = "alignment" if isinstance(dataset, AlignmentDataset) else "dataset"
-        self._tab_manager.open_viewer(viewer, resource_key=f"{prefix}:{resource_id}")
+        if continue_editing and isinstance(dataset, SequenceDataset):
+            from widgets.viewers.sequence_editor import SequenceEditor
+
+            viewer = SequenceEditor(dataset, context=self._viewer_context)
+            resource_key = f"sequence-editor:{dataset.dataset_id}"
+        else:
+            viewer = self._viewer_registry.create_viewer_for(dataset, self._viewer_context)
+            resource_id = getattr(dataset, "alignment_id", None) or getattr(dataset, "dataset_id", None)
+            prefix = "alignment" if isinstance(dataset, AlignmentDataset) else "dataset"
+            resource_key = f"{prefix}:{resource_id}"
+        if saved_feedback:
+            show_feedback = getattr(viewer, "show_revision_saved_feedback", None)
+            if callable(show_feedback):
+                show_feedback(saved_feedback)
+        self._tab_manager.open_viewer(viewer, resource_key=resource_key)
 
     def open_project_bundle(self, filepath: str) -> LoadedProjectBundle:
         """Load a bundle through persistence, then publish it to the Studio state."""
@@ -764,6 +813,8 @@ class ProjectController(QObject):
         dataset: SequenceDataset,
         selected_record_ids: tuple[str, ...],
         *,
+        name: str | None = None,
+        dataset_id: str | None = None,
         renamed_record_ids: dict[str, str] | None = None,
     ) -> SequenceDataset:
         """Register an immutable record-subset Dataset without touching its parent."""
@@ -798,9 +849,16 @@ class ProjectController(QObject):
         ids = tuple(record.sequence_id for record in records)
         if len(set(ids)) != len(ids):
             raise ValueError("Rename would produce duplicate record IDs.")
+        resolved_name = str(name or f"{dataset.name} selection").strip()
+        requested_dataset_id = str(dataset_id or f"{dataset.dataset_id}_selection").strip()
+        if not resolved_name or not requested_dataset_id:
+            raise ValueError("Dataset name and Dataset ID are required.")
+        resolved_dataset_id = _unique_dataset_id(project, requested_dataset_id)
+        if dataset_id is not None and resolved_dataset_id != requested_dataset_id:
+            raise ValueError(f"dataset_id already exists in project: {requested_dataset_id}")
         derived = SequenceDataset(
-            dataset_id=_unique_dataset_id(project, f"{dataset.dataset_id}_selection"),
-            name=f"{dataset.name} selection",
+            dataset_id=resolved_dataset_id,
+            name=resolved_name,
             source_type=dataset.source_type,
             records=records,
             metadata={
@@ -1049,6 +1107,27 @@ class ProjectController(QObject):
             return None
         return self.align_chromatogram_viewer(viewer, settings=settings)
 
+    def _resolve_mafft_for_alignment(self, parent: object) -> str | None:
+        """Preflight MAFFT before an alignment can mutate Project state.
+
+        Production Studio uses the shared setup UX.  An injected resolver is
+        retained for controller tests and embedding, while still preventing an
+        unavailable executable from starting the alignment runner.
+        """
+
+        if self._uses_default_mafft_resolver:
+            return ensure_studio_mafft_available(parent)
+        try:
+            return self._mafft_executable_resolver()
+        except Exception as error:
+            QMessageBox.warning(
+                parent,
+                "MAFFT Not Found",
+                "MAFFT is required for sequence alignment.\n\n"
+                f"SangerFlow could not use the configured MAFFT executable.\n\n{error}",
+            )
+            return None
+
     def align_chromatogram_viewer(
         self, viewer: ChromatogramViewer, *, settings: AlignmentSettings | None = None,
     ) -> str | None:
@@ -1063,6 +1142,9 @@ class ProjectController(QObject):
         reads = tuple(read_view.read for read_view in viewer.visible_read_views)
         if not reads:
             viewer.status_message_changed.emit("At least one visible read is required for alignment.")
+            return None
+        mafft_executable = self._resolve_mafft_for_alignment(viewer)
+        if mafft_executable is None:
             return None
         project = self._state.project
         source_dataset = getattr(viewer, "source_dataset", None)
@@ -1092,7 +1174,6 @@ class ProjectController(QObject):
 
         resolved_settings = settings or AlignmentSettings(output_name=f"{source_dataset.name} alignment")
         try:
-            mafft_executable = self._mafft_executable_resolver()
             alignment = align_reads(
                 reads,
                 strategy=resolved_settings.strategy,
@@ -1475,7 +1556,14 @@ class ProjectController(QObject):
         )
         self._state.replace_project(updated, dirty=True)
         self._last_warnings = ()
-        self._open_revision_viewer(edited_dataset)
+        saved_entry = updated.get_entry(edited_dataset.alignment_id)
+        self._open_revision_viewer(
+            edited_dataset,
+            saved_feedback=(
+                f"Saved as {saved_entry.display_name} revision {saved_entry.revision_number}. "
+                "Previous revision preserved."
+            ),
+        )
         return edited_dataset
 
     def register_edited_sequence_dataset_from_viewer(self, viewer: object) -> SequenceDataset:
@@ -1510,7 +1598,15 @@ class ProjectController(QObject):
         )
         self._state.replace_project(updated, dirty=True)
         self._last_warnings = ()
-        self._open_revision_viewer(edited)
+        saved_entry = updated.get_entry(edited.dataset_id)
+        self._open_revision_viewer(
+            edited,
+            saved_feedback=(
+                f"Saved as {saved_entry.display_name} revision {saved_entry.revision_number}. "
+                "Previous revision preserved."
+            ),
+            continue_editing=True,
+        )
         return edited
 
     def align_sequence_dataset_from_editor(self, viewer: object) -> str | None:
@@ -1544,12 +1640,15 @@ class ProjectController(QObject):
             if answer != QMessageBox.StandardButton.Yes:
                 return None
             alignment_input = _gapless_mafft_input(dataset)
+        mafft_executable = self._resolve_mafft_for_alignment(viewer)
+        if mafft_executable is None:
+            return None
         try:
             aligned_sequences = align_sequence_dataset(
                 alignment_input,
                 dataset_id=_unique_dataset_id(project, f"{dataset.dataset_id}_mafft"),
                 name=settings.output_name,
-                mafft_executable=self._mafft_executable_resolver(),
+                mafft_executable=mafft_executable,
             )
         except Exception as error:
             raise ValueError(f"MAFFT alignment could not start: {error}") from error
@@ -1758,7 +1857,11 @@ class ProjectController(QObject):
         updated = add_blast_result_to_project(
             project, result, metadata={"added_by": "NCBI Web BLAST XML Import"},
         )
-        self._store_result_and_open(updated, result)
+        self._store_result_and_open(
+            updated,
+            result,
+            completion_message="NCBI BLAST XML imported",
+        )
         return result, preview
 
     def apply_blast_result_metadata(
@@ -2225,7 +2328,13 @@ class ProjectController(QObject):
         self._state.replace_project(updated, dirty=True)
         return dataset
 
-    def _store_result_and_open(self, project: Project, result: object) -> None:
+    def _store_result_and_open(
+        self,
+        project: Project,
+        result: object,
+        *,
+        completion_message: str | None = None,
+    ) -> None:
         repository = self._ensure_result_repository()
         repository.register_result(result)
         self._state.replace_project(project, dirty=True)
@@ -2242,6 +2351,15 @@ class ProjectController(QObject):
             viewer = BoldResultStudioViewer(result, context=self._viewer_context)
         else:
             return
+        if isinstance(result, BlastResultDataset):
+            entry = project.get_analysis_entry(result.result_id)
+            message = completion_message or "BLAST completed"
+            show_feedback = getattr(viewer, "show_project_storage_feedback", None)
+            if callable(show_feedback):
+                show_feedback(
+                    f"{message}. Stored in Project Results as {entry.display_name}. "
+                    "Save Project to persist it to disk."
+                )
         self._tab_manager.open_viewer(
             viewer,
             resource_key=f"analysis-result:{result.result_id}",

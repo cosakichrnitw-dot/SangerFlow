@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QInputDialog,
     QHeaderView,
+    QLineEdit,
     QLabel,
+    QMenu,
     QMessageBox,
     QTableWidget,
     QTableWidgetItem,
     QPushButton,
+    QToolButton,
     QHBoxLayout,
     QSizePolicy,
     QVBoxLayout,
@@ -50,6 +56,90 @@ from widgets.metadata_presentation import (
 )
 from widgets.quality_metrics import format_hq_percent
 from widgets.batch_rename_dialog import BatchRenameDialog
+from widgets.dataset_creation_dialog import CreateDatasetDialog
+
+
+_BASE_COLUMN_KEYS = (
+    "selected",
+    "record_id",
+    "length",
+    "hq_percent",
+    "description_source",
+    "sequence_preview",
+)
+_REQUIRED_COLUMN_KEYS = frozenset({"selected", "record_id"})
+_DEFAULT_VISIBLE_COLUMN_KEYS = frozenset({
+    "selected",
+    "record_id",
+    "length",
+    "hq_percent",
+    "sequence_preview",
+})
+_COLUMN_LABELS = {
+    "selected": "Selected",
+    "record_id": "Record ID",
+    "length": "Length",
+    "hq_percent": "HQ%",
+    "description_source": "Description / Source",
+    "sequence_preview": "Sequence preview",
+}
+_COLUMN_WIDTHS = {
+    "selected": 76,
+    "record_id": 160,
+    "length": 72,
+    "hq_percent": 88,
+    "description_source": 240,
+    "sequence_preview": 280,
+}
+_COMMON_METADATA_FIELDS = ("source_batch", "Species", "Location", "Population", "Country")
+_DEFAULT_VISIBLE_METADATA_FIELDS = ("Species", "Location", "Population", "Country")
+
+
+class _DatasetTableItem(QTableWidgetItem):
+    """Display item whose ordering stays typed while Dataset stays immutable."""
+
+    def __init__(self, text: str, sort_value: object) -> None:
+        super().__init__(text)
+        self._sort_value = sort_value
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        other_value = getattr(other, "_sort_value", other.text())
+        return _sortable_value(self._sort_value) < _sortable_value(other_value)
+
+
+@dataclass(frozen=True)
+class _DatasetRecordRow:
+    record_id: str
+    length: int
+    hq_percent: str
+    description: str
+    source: str
+    sequence_preview: str
+    metadata: dict[str, object]
+
+    def metadata_value(self, field: str) -> str:
+        wanted = field.casefold()
+        for key, value in self.metadata.items():
+            if str(key).casefold() == wanted:
+                return "—" if value is None or str(value) == "" else str(value)
+        return "—"
+
+    def value(self, key: str) -> str:
+        values = {
+            "record_id": self.record_id,
+            "length": str(self.length),
+            "hq_percent": self.hq_percent,
+            "description_source": self.description or self.source or "—",
+            "sequence_preview": self.sequence_preview,
+        }
+        return values.get(key, self.metadata_value(key))
+
+    def sort_value(self, key: str) -> object:
+        if key == "length":
+            return self.length
+        if key == "hq_percent":
+            return _hq_numeric(self.hq_percent)
+        return self.value(key)
 
 
 class DatasetViewer(BaseViewer):
@@ -60,6 +150,10 @@ class DatasetViewer(BaseViewer):
         self._context = context
         self._action_provider = DatasetViewerActionProvider(context)
         self._updating_inclusion = False
+        self._search_text = ""
+        self._available_metadata_fields: tuple[str, ...] = ()
+        self._visible_column_keys: set[str] = set(_DEFAULT_VISIBLE_COLUMN_KEYS)
+        self._auto_visible_metadata_fields: set[str] = set()
         self._included_record_ids: set[str] = set(
             getattr(record, "sequence_id", getattr(record, "record_id", ""))
             for record in getattr(dataset, "records", ())
@@ -401,6 +495,22 @@ class DatasetViewer(BaseViewer):
         paths = source_filepaths(metadata)
         self._source_files_button.setVisible(bool(paths))
         self._source_files_button.setText(f"Show… ({len(paths)} files)")
+        self._available_metadata_fields = _metadata_fields(self._dataset)
+        available_by_folded = {
+            field.casefold(): field for field in self._available_metadata_fields
+        }
+        for preferred_field in _DEFAULT_VISIBLE_METADATA_FIELDS:
+            canonical_field = preferred_field.casefold()
+            available_field = available_by_folded.get(canonical_field)
+            if available_field is not None and canonical_field not in self._auto_visible_metadata_fields:
+                self._visible_column_keys.add(available_field)
+                self._auto_visible_metadata_fields.add(canonical_field)
+        self._visible_column_keys.intersection_update(
+            set(_BASE_COLUMN_KEYS) | set(self._available_metadata_fields)
+        )
+        self._visible_column_keys.update(_REQUIRED_COLUMN_KEYS)
+        self._metadata_button.setEnabled(isinstance(self._dataset, SequenceDataset))
+        self._rebuild_columns_menu()
         self._populate_records()
 
     def _build_ui(self) -> None:
@@ -433,25 +543,39 @@ class DatasetViewer(BaseViewer):
         summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(summary)
 
+        table_controls = QHBoxLayout()
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search this dataset…")
+        self._columns_button = QToolButton()
+        self._columns_button.setText("Columns…")
+        self._columns_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._columns_menu = QMenu(self._columns_button)
+        self._columns_button.setMenu(self._columns_menu)
+        self._metadata_button = QToolButton()
+        self._metadata_button.setText("Metadata…")
+        self._metadata_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._metadata_menu = QMenu(self._metadata_button)
+        self._metadata_menu.addAction("Import Sample Metadata…", self.request_import_sample_metadata)
+        self._metadata_menu.addAction("Create Excel Template…", self.request_create_metadata_template)
+        self._metadata_button.setMenu(self._metadata_menu)
+        self._metadata_button.setEnabled(isinstance(self._dataset, SequenceDataset))
+        table_controls.addWidget(self._search, 1)
+        table_controls.addWidget(self._metadata_button)
+        table_controls.addWidget(self._columns_button)
+        layout.addLayout(table_controls)
+
         self._records_table = QTableWidget()
-        self._records_table.setColumnCount(6)
-        self._records_table.setHorizontalHeaderLabels(
-            ("Include", "Record ID", "Length", "HQ%", "Description / Source", "Sequence preview")
-        )
+        self._records_table.setColumnCount(len(_BASE_COLUMN_KEYS))
         self._records_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self._records_table.setColumnWidth(0, 64)
-        self._records_table.setColumnWidth(1, 160)
-        self._records_table.setColumnWidth(2, 72)
-        self._records_table.setColumnWidth(3, 88)
-        self._records_table.setColumnWidth(4, 240)
-        self._records_table.setColumnWidth(5, 320)
         self._records_table.setWordWrap(False)
         self._records_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self._records_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._records_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
+        self._records_table.setSortingEnabled(True)
         self._records_table.itemChanged.connect(self._record_include_changed)
+        self._search.textChanged.connect(self._search_changed)
         layout.addWidget(self._records_table, 1)
         controls = QHBoxLayout()
         for label, icon_name, callback in (
@@ -474,26 +598,79 @@ class DatasetViewer(BaseViewer):
         show_source_filepaths_dialog(self, source_filepaths(getattr(self._dataset, "metadata", {})))
 
     def _populate_records(self) -> None:
-        rows = _record_rows(self._dataset)
+        rows = tuple(row for row in _record_rows(self._dataset) if self._matches_search(row))
+        column_keys = self._column_keys()
         self._updating_inclusion = True
+        sorting_enabled = self._records_table.isSortingEnabled()
         try:
+            self._records_table.setSortingEnabled(False)
+            self._records_table.setColumnCount(len(column_keys))
+            self._records_table.setHorizontalHeaderLabels(
+                tuple(_column_label(key) for key in column_keys)
+            )
+            for column_index, key in enumerate(column_keys):
+                header_item = self._records_table.horizontalHeaderItem(column_index)
+                if header_item is not None and key == "selected":
+                    header_item.setToolTip("Select records for actions in this Dataset view.")
+                self._records_table.setColumnHidden(column_index, key not in self._visible_column_keys)
+                self._records_table.setColumnWidth(column_index, _column_width(key))
             self._records_table.setRowCount(len(rows))
             for row_index, row in enumerate(rows):
-                record_id = row[0]
-                include = QTableWidgetItem()
+                record_id = row.record_id
+                include = _DatasetTableItem("", record_id)
                 include.setFlags(include.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 include.setCheckState(
                     Qt.CheckState.Checked if record_id in self._included_record_ids else Qt.CheckState.Unchecked
                 )
                 self._records_table.setItem(row_index, 0, include)
-                for column_index, value in enumerate(row, start=1):
+                for column_index, key in enumerate(column_keys[1:], start=1):
+                    value = row.value(key)
                     self._records_table.setItem(
                         row_index,
                         column_index,
-                        QTableWidgetItem(str(value)),
+                        _DatasetTableItem(str(value), row.sort_value(key)),
                     )
         finally:
             self._updating_inclusion = False
+            self._records_table.setSortingEnabled(sorting_enabled)
+
+    def _column_keys(self) -> tuple[str, ...]:
+        return _BASE_COLUMN_KEYS + self._available_metadata_fields
+
+    def _rebuild_columns_menu(self) -> None:
+        self._columns_menu.clear()
+        for key in self._column_keys():
+            action = self._columns_menu.addAction(_column_label(key))
+            action.setCheckable(True)
+            action.setChecked(key in self._visible_column_keys)
+            action.setEnabled(key not in _REQUIRED_COLUMN_KEYS)
+            action.toggled.connect(lambda checked, column_key=key: self._set_column_visible(column_key, checked))
+
+    def _set_column_visible(self, key: str, visible: bool) -> None:
+        if key in _REQUIRED_COLUMN_KEYS:
+            return
+        if visible:
+            self._visible_column_keys.add(key)
+        else:
+            self._visible_column_keys.discard(key)
+        self._populate_records()
+
+    def _search_changed(self, value: str) -> None:
+        self._search_text = value.casefold().strip()
+        self._populate_records()
+
+    def _matches_search(self, row: "_DatasetRecordRow") -> bool:
+        if not self._search_text:
+            return True
+        return any(
+            self._search_text in value.casefold()
+            for value in (
+                row.record_id,
+                row.description,
+                row.source,
+                *(str(value) for value in row.metadata.values()),
+            )
+        )
 
     def _record_include_changed(self, item: QTableWidgetItem) -> None:
         if self._updating_inclusion or item.column() != 0 or item.row() < 0:
@@ -507,7 +684,7 @@ class DatasetViewer(BaseViewer):
             self._included_record_ids.discard(id_item.text())
 
     def select_all_records(self) -> None:
-        self._included_record_ids = {row[0] for row in _record_rows(self._dataset)}
+        self._included_record_ids = {row.record_id for row in _record_rows(self._dataset)}
         self._populate_records()
 
     def deselect_all_records(self) -> None:
@@ -515,7 +692,7 @@ class DatasetViewer(BaseViewer):
         self._populate_records()
 
     def invert_record_selection(self) -> None:
-        all_ids = {row[0] for row in _record_rows(self._dataset)}
+        all_ids = {row.record_id for row in _record_rows(self._dataset)}
         self._included_record_ids = all_ids - self._included_record_ids
         self._populate_records()
 
@@ -535,13 +712,25 @@ class DatasetViewer(BaseViewer):
         if not selected_ids:
             QMessageBox.warning(self, "Create Dataset from Selection", "Select at least one record.")
             return None
+        dialog = CreateDatasetDialog(
+            self,
+            suggested_id=f"{_dataset_identifier(self._dataset)}_selection",
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
         controller = getattr(self._context, "project_controller", None)
         method = getattr(controller, "create_dataset_from_record_selection", None)
         if not callable(method):
             QMessageBox.warning(self, "Create Dataset from Selection", "Project dataset creation is not configured.")
             return None
         try:
-            derived = method(self._dataset, selected_ids, renamed_record_ids=renamed_record_ids)
+            derived = method(
+                self._dataset,
+                selected_ids,
+                name=dialog.dataset_name,
+                dataset_id=dialog.dataset_id,
+                renamed_record_ids=renamed_record_ids,
+            )
         except Exception as error:
             QMessageBox.warning(self, "Create Dataset from Selection", str(error))
             return None
@@ -961,13 +1150,13 @@ def _is_sequence_dataset(dataset: object) -> bool:
     return isinstance(dataset, SequenceDataset)
 
 
-def _record_rows(dataset: object) -> tuple[tuple[str, int, str, str, str], ...]:
+def _record_rows(dataset: object) -> tuple[_DatasetRecordRow, ...]:
     if hasattr(dataset, "records"):
         return tuple(_record_row(record) for record in getattr(dataset, "records", ()))
     return ()
 
 
-def _record_row(record: object) -> tuple[str, int, str, str, str]:
+def _record_row(record: object) -> _DatasetRecordRow:
     sequence = getattr(record, "sequence", None)
     if sequence is None:
         sequence = getattr(record, "aligned_sequence", "")
@@ -977,15 +1166,61 @@ def _record_row(record: object) -> tuple[str, int, str, str, str]:
         description = getattr(record, "source_record_id", "-")
     source = getattr(record, "source_reference", None)
     quality_summary = format_hq_percent(source)
-    record_metadata = getattr(record, "metadata", {}) or {}
-    source_text = str(description or record_metadata.get("source_filename") or "-")
-    return (
-        str(record_id),
-        len(sequence),
-        quality_summary,
-        source_text,
-        _preview(sequence),
+    record_metadata = dict(getattr(record, "metadata", {}) or {})
+    return _DatasetRecordRow(
+        record_id=str(record_id),
+        length=len(sequence),
+        hq_percent=quality_summary,
+        description=str(description or ""),
+        source=str(record_metadata.get("source_filename") or ""),
+        sequence_preview=_preview(sequence),
+        metadata=record_metadata,
     )
+
+
+def _metadata_fields(dataset: object) -> tuple[str, ...]:
+    """Discover record metadata using Project Records' case-insensitive rule."""
+
+    by_folded: dict[str, str] = {}
+    for row in _record_rows(dataset):
+        for key in row.metadata:
+            by_folded.setdefault(str(key).casefold(), str(key))
+    ordered = [
+        by_folded.pop(field.casefold())
+        for field in _COMMON_METADATA_FIELDS
+        if field.casefold() in by_folded
+    ]
+    return tuple(ordered + sorted(by_folded.values(), key=str.casefold))
+
+
+def _column_label(key: str) -> str:
+    return _COLUMN_LABELS.get(key, " ".join(part.capitalize() for part in key.replace("_", " ").split()))
+
+
+def _column_width(key: str) -> int:
+    return _COLUMN_WIDTHS.get(key, 150)
+
+
+def _sortable_value(value: object) -> tuple[int, object]:
+    """Return a stable natural-sort key without changing Dataset record order."""
+
+    if isinstance(value, (int, float)):
+        return (0, value)
+    text = str(value)
+    if text == "—":
+        return (2, "")
+    parts = tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", text)
+    )
+    return (1, parts)
+
+
+def _hq_numeric(value: str) -> float:
+    try:
+        return float(value.rstrip("%"))
+    except ValueError:
+        return -1.0
 
 
 def _preview(sequence: str, limit: int = 80) -> str:

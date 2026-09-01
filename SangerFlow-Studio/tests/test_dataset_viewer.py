@@ -70,6 +70,191 @@ class DatasetViewerTests(unittest.TestCase):
         self.assertEqual(viewer._records_table.item(0, 1).text(), "IK345")
         self.assertEqual(viewer._records_table.item(0, 2).text(), "4")
 
+    def test_dataset_viewer_discovers_metadata_columns_with_compact_research_defaults(self) -> None:
+        dataset = SequenceDataset(
+            dataset_id="coi-import",
+            name="COI Imported",
+            source_type=SourceType.IMPORTED_FASTA,
+            records=(
+                SequenceRecord("C2", "ATGC", metadata={"Species": "Rhynchobatus springeri", "Location": "Cirebon"}),
+                SequenceRecord("C10", "ATGCA", metadata={"species": "Rhynchobatus australiae", "Voucher": "V-10"}),
+            ),
+        )
+        viewer = DatasetViewer(dataset)
+        column_keys = viewer._column_keys()
+
+        self.assertEqual(viewer._records_table.horizontalHeaderItem(0).text(), "Selected")
+        self.assertEqual(
+            viewer._records_table.horizontalHeaderItem(0).toolTip(),
+            "Select records for actions in this Dataset view.",
+        )
+        self.assertIn("Species", viewer._available_metadata_fields)
+        self.assertIn("Location", viewer._available_metadata_fields)
+        self.assertIn("Voucher", viewer._available_metadata_fields)
+        self.assertTrue(viewer._records_table.isColumnHidden(column_keys.index("description_source")))
+        self.assertFalse(viewer._records_table.isColumnHidden(column_keys.index("Species")))
+        self.assertFalse(viewer._records_table.isColumnHidden(column_keys.index("Location")))
+        self.assertTrue(viewer._records_table.isColumnHidden(column_keys.index("Voucher")))
+        self.assertFalse(viewer._records_table.isColumnHidden(column_keys.index("sequence_preview")))
+
+        viewer._set_column_visible("Species", True)
+        self.assertFalse(viewer._records_table.isColumnHidden(viewer._column_keys().index("Species")))
+        self.assertEqual(viewer._records_table.item(0, viewer._column_keys().index("Species")).text(), "Rhynchobatus springeri")
+        viewer._set_column_visible("Species", False)
+        self.assertTrue(viewer._records_table.isColumnHidden(viewer._column_keys().index("Species")))
+
+    def test_metadata_revision_defaults_are_visible_after_import_and_project_reopen(self) -> None:
+        source = SequenceDataset(
+            dataset_id="ab1-reads",
+            name="AB1 reads",
+            source_type=SourceType.AB1_TRIMMED,
+            records=(SequenceRecord("C2", "ATGC", metadata={"source_batch": "Cirebon"}),),
+        )
+        state = AppState()
+        controller = ProjectController(state)
+        controller.open_project(Project.create("project", "Project").add_dataset(source))
+        with TemporaryDirectory() as directory:
+            metadata_path = Path(directory) / "metadata.csv"
+            metadata_path.write_text(
+                "Sample_ID,Species,Location,Population,Country\n"
+                "C2,Rhynchobatus australiae,Cirebon,North Java,Indonesia\n",
+                encoding="utf-8",
+            )
+            revised = controller.import_sample_metadata_for_dataset(source, str(metadata_path))
+            viewer = DatasetViewer(revised)
+            keys = viewer._column_keys()
+            fields_by_folded = {
+                field.casefold(): field for field in viewer._available_metadata_fields
+            }
+            for field in ("species", "location", "population", "country"):
+                self.assertIn(field, fields_by_folded)
+                self.assertFalse(
+                    viewer._records_table.isColumnHidden(keys.index(fields_by_folded[field]))
+                )
+            self.assertEqual(
+                viewer._records_table.item(0, keys.index(fields_by_folded["location"])).text(),
+                "Cirebon",
+            )
+
+            bundle = Path(directory) / "project.sangerflow"
+            save_project_bundle(state.current_project, bundle)
+            loaded = load_project_bundle(bundle)
+            try:
+                reloaded = loaded.project.get_dataset(revised.dataset_id)
+                reloaded_viewer = DatasetViewer(reloaded)
+                self.assertEqual(
+                    reloaded_viewer._records_table.item(
+                        0,
+                        reloaded_viewer._column_keys().index(
+                            next(
+                                field for field in reloaded_viewer._available_metadata_fields
+                                if field.casefold() == "country"
+                            )
+                        ),
+                    ).text(),
+                    "Indonesia",
+                )
+            finally:
+                loaded.cleanup()
+
+    def test_dataset_viewer_search_sort_and_selection_are_display_only(self) -> None:
+        dataset = SequenceDataset(
+            dataset_id="coi-import",
+            name="COI Imported",
+            source_type=SourceType.IMPORTED_FASTA,
+            records=(
+                SequenceRecord(
+                    "C10", "ATGCA", description="Taiwan collection",
+                    source_reference=SimpleNamespace(quality=(40, 40)),
+                    metadata={"Species": "Zebra ray", "Location": "Cirebon", "source_filename": "C10_FishF1.ab1"},
+                ),
+                SequenceRecord(
+                    "C2", "ATGCAT",
+                    source_reference=SimpleNamespace(quality=(0, 40)),
+                    metadata={"Species": "Aquila ray", "Location": "Rembang"},
+                ),
+                SequenceRecord(
+                    "C1", "ATGC",
+                    source_reference=SimpleNamespace(quality=(0, 0)),
+                    metadata={},
+                ),
+            ),
+        )
+        viewer = DatasetViewer(dataset)
+        original_ids = dataset.sequence_ids
+        original_metadata = tuple(record.metadata for record in dataset.records)
+
+        # Natural Record ID, numeric Length/HQ%, and arbitrary metadata sorts
+        # affect only the projection in the table.
+        viewer._records_table.sortItems(1, Qt.SortOrder.AscendingOrder)
+        self.assertEqual(
+            tuple(viewer._records_table.item(index, 1).text() for index in range(3)),
+            ("C1", "C2", "C10"),
+        )
+        viewer._records_table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        self.assertEqual(viewer._records_table.item(0, 1).text(), "C2")
+        viewer._records_table.sortItems(3, Qt.SortOrder.DescendingOrder)
+        self.assertEqual(viewer._records_table.item(0, 1).text(), "C10")
+        viewer._set_column_visible("Species", True)
+        viewer._records_table.sortItems(viewer._column_keys().index("Species"), Qt.SortOrder.AscendingOrder)
+        self.assertEqual(viewer._records_table.item(0, 1).text(), "C2")
+
+        # Check state is keyed by record identity rather than visible row.
+        for index in range(viewer._records_table.rowCount()):
+            if viewer._records_table.item(index, 1).text() == "C1":
+                viewer._records_table.item(index, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.assertEqual(viewer.included_record_ids, frozenset({"C2", "C10"}))
+        viewer._search.setText("cirebon")
+        self.assertEqual(viewer._records_table.rowCount(), 1)
+        self.assertEqual(viewer._records_table.item(0, 1).text(), "C10")
+        self.assertEqual(viewer.included_record_ids, frozenset({"C2", "C10"}))
+        viewer._search.setText("taiwan")
+        self.assertEqual(viewer._records_table.rowCount(), 1)
+        viewer._search.setText("fishf1")
+        self.assertEqual(viewer._records_table.rowCount(), 1)
+
+        self.assertEqual(dataset.sequence_ids, original_ids)
+        self.assertEqual(tuple(record.metadata for record in dataset.records), original_metadata)
+
+    def test_dataset_viewer_displays_metadata_after_selection_derivation(self) -> None:
+        dataset = SequenceDataset(
+            dataset_id="coi-import",
+            name="COI Imported",
+            source_type=SourceType.IMPORTED_FASTA,
+            records=(
+                SequenceRecord("C2", "ATGC", metadata={"Species": "Rhynchobatus springeri", "Location": "Cirebon"}),
+                SequenceRecord("C3", "ATGT", metadata={"Species": "Rhynchobatus australiae", "Location": "Rembang"}),
+            ),
+        )
+        state = AppState()
+        controller = ProjectController(state)
+        controller.open_project(Project.create("project-1", "Project 1").add_dataset(dataset))
+        viewer = DatasetViewer(dataset, ViewerContext(state, controller))
+        viewer._included_record_ids = {"C2"}
+
+        class _CreateDialog:
+            dataset_id = "coi_subset"
+            dataset_name = "COI subset"
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def exec(self) -> int:
+                return 1
+
+        with patch("widgets.viewers.dataset_viewer.CreateDatasetDialog", _CreateDialog):
+            derived = viewer.create_dataset_from_selection()
+
+        self.assertIsInstance(derived, SequenceDataset)
+        self.assertEqual(derived.records[0].metadata["Species"], "Rhynchobatus springeri")
+        derived_viewer = DatasetViewer(derived)
+        self.assertIn("Species", derived_viewer._available_metadata_fields)
+        derived_viewer._set_column_visible("Location", True)
+        self.assertEqual(
+            derived_viewer._records_table.item(0, derived_viewer._column_keys().index("Location")).text(),
+            "Cirebon",
+        )
+
     def test_long_metadata_and_source_text_do_not_force_a_huge_dataset_viewer_width(self) -> None:
         dataset = SequenceDataset(
             dataset_id="coi-import",
@@ -190,13 +375,65 @@ class DatasetViewerTests(unittest.TestCase):
         viewer._included_record_ids.update({"IK345", "IK347"})
         viewer._populate_records()
 
-        derived = viewer.create_dataset_from_selection()
+        class _CreateDialog:
+            dataset_id = "coi_subset"
+            dataset_name = "COI subset"
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def exec(self) -> int:
+                return 1
+
+        with patch("widgets.viewers.dataset_viewer.CreateDatasetDialog", _CreateDialog):
+            derived = viewer.create_dataset_from_selection()
 
         self.assertEqual(tuple(record.sequence_id for record in dataset.records), ("IK345", "IK346", "IK347"))
         self.assertEqual(tuple(record.sequence_id for record in derived.records), ("IK345", "IK347"))
         self.assertEqual(derived.metadata["derived_from"], "RECORD_SELECTION")
         self.assertEqual(state.current_project.get_entry(derived.dataset_id).parent_dataset_id, "coi-import")
         view.close()
+
+    def test_dataset_selection_uses_shared_naming_dialog_and_cancel_is_non_destructive(self) -> None:
+        dataset = SequenceDataset.from_sequence_pairs(
+            "coi-import", "COI Imported", SourceType.IMPORTED_FASTA,
+            (("IK345", "ATGC"), ("IK346", "ATGT")),
+        )
+        state = AppState()
+        controller = ProjectController(state)
+        controller.open_project(Project.create("project", "Project").add_dataset(dataset))
+        viewer = DatasetViewer(dataset, ViewerContext(state, controller))
+        viewer._included_record_ids = {"IK345"}
+
+        class _CancelDialog:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def exec(self) -> int:
+                return 0
+
+        with patch("widgets.viewers.dataset_viewer.CreateDatasetDialog", _CancelDialog):
+            self.assertIsNone(viewer.create_dataset_from_selection())
+        self.assertEqual(len(state.current_project.dataset_entries), 1)
+
+        class _CreateDialog:
+            dataset_id = "reviewed_subset"
+            dataset_name = "Reviewed COI subset"
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def exec(self) -> int:
+                return 1
+
+        with patch("widgets.viewers.dataset_viewer.CreateDatasetDialog", _CreateDialog):
+            derived = viewer.create_dataset_from_selection()
+        self.assertIsNotNone(derived)
+        assert derived is not None
+        self.assertEqual(derived.dataset_id, "reviewed_subset")
+        self.assertEqual(derived.name, "Reviewed COI subset")
+        self.assertEqual(derived.sequence_ids, ("IK345",))
+        self.assertEqual(dataset.sequence_ids, ("IK345", "IK346"))
 
     def test_metadata_xlsx_import_and_validation_errors(self) -> None:
         dataset = SequenceDataset.from_sequence_pairs(
@@ -546,6 +783,80 @@ class DatasetViewerTests(unittest.TestCase):
                 loaded.cleanup()
         view.close()
 
+    def test_alignment_editor_feedback_tracks_working_copy_and_saved_revision(self) -> None:
+        source = SequenceDataset.from_sequence_pairs(
+            "coi-import", "COI Imported", SourceType.IMPORTED_FASTA,
+            (("IK345", "ATGC"), ("IK346", "ATGT")),
+        )
+        alignment = AlignmentDataset(
+            alignment_id="coi-alignment",
+            name="COI Alignment",
+            parent_dataset_id="coi-import",
+            records=(
+                AlignmentRecord("IK345", "IK345", "ATGC"),
+                AlignmentRecord("IK346", "IK346", "ATGT"),
+            ),
+        )
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        controller.open_project(
+            Project.create("project-1", "Project 1")
+            .add_dataset(source)
+            .add_dataset(alignment, parent_dataset_id="coi-import")
+        )
+        viewer = AlignmentViewer(alignment, context=view.viewer_context)
+
+        self.assertIn("Editing working copy • No unsaved edits", viewer._summary.text())
+        self.assertFalse(viewer._save_revision_button.isEnabled())
+        self.assertTrue(viewer.set_base("IK345", 0, "G"))
+        self.assertIn("Editing working copy • Unsaved edits", viewer._summary.text())
+        self.assertTrue(viewer._save_revision_button.isEnabled())
+        self.assertFalse(viewer._manual_edit_legend.isHidden())
+        self.assertTrue(viewer.undo())
+        self.assertIn("Editing working copy • No unsaved edits", viewer._summary.text())
+        self.assertTrue(viewer.set_base("IK345", 0, "G"))
+
+        viewer._save_revision_button.click()
+
+        self.assertIsInstance(state.active_viewer, AlignmentViewer)
+        self.assertIn("Saved as COI Alignment revision 2. Previous revision preserved.", state.active_viewer._status.text())
+        self.assertEqual(state.current_project.get_entry("coi-alignment").revision_state.name, "SUPERSEDED")
+        view.close()
+
+    def test_unsaved_alignment_close_requires_explicit_save_discard_or_cancel(self) -> None:
+        alignment = AlignmentDataset(
+            alignment_id="coi-alignment",
+            name="COI Alignment",
+            parent_dataset_id="coi-import",
+            records=(
+                AlignmentRecord("IK345", "IK345", "ATGC"),
+                AlignmentRecord("IK346", "IK346", "ATGT"),
+            ),
+        )
+        viewer = AlignmentViewer(alignment)
+        self.assertTrue(viewer.set_base("IK345", 0, "G"))
+
+        with patch(
+            "widgets.viewers.alignment_viewer.QMessageBox.warning",
+            return_value=QMessageBox.StandardButton.Cancel,
+        ):
+            self.assertFalse(viewer.close_viewer())
+        self.assertTrue(viewer.has_pending_scientific_changes)
+
+        with patch(
+            "widgets.viewers.alignment_viewer.QMessageBox.warning",
+            return_value=QMessageBox.StandardButton.Discard,
+        ):
+            self.assertTrue(viewer.close_viewer())
+
+        viewer.save_edited_alignment = lambda: object()  # type: ignore[method-assign]
+        with patch(
+            "widgets.viewers.alignment_viewer.QMessageBox.warning",
+            return_value=QMessageBox.StandardButton.Save,
+        ):
+            self.assertTrue(viewer.close_viewer())
+
     def test_alignment_viewer_full_export_actions_write_alignment_files(self) -> None:
         alignment = AlignmentDataset(
             alignment_id="coi-alignment",
@@ -582,6 +893,116 @@ class DatasetViewerTests(unittest.TestCase):
             self.assertIn("GAP=-", Path(nexus_path).read_text(encoding="utf-8"))
             self.assertTrue(Path(phylip_path).read_text(encoding="utf-8").startswith("2 5"))
             self.assertEqual(viewer.selection_fasta_text(), original_selection)
+
+    def test_alignment_selected_rows_and_regions_export_with_distinct_semantics(self) -> None:
+        alignment = AlignmentDataset(
+            alignment_id="coi-alignment",
+            name="COI Alignment",
+            parent_dataset_id="coi-import",
+            records=(
+                AlignmentRecord("IK345", "IK345", "ATG-C"),
+                AlignmentRecord("IK346", "IK346", "ATGTC"),
+            ),
+        )
+        viewer = AlignmentViewer(alignment)
+
+        # A one-cell selection still selects its complete AlignmentDataset row.
+        viewer._grid.select_rectangle(1, 2, 1, 2)
+        self.assertEqual(viewer.selected_rows_fasta_text(), ">IK345\nATG-C\n")
+        self.assertEqual(viewer.selection_fasta_text(), ">IK345\nG\n")
+        self.assertEqual(
+            viewer.selected_rows_export_summary(),
+            "1 sequence selected • Alignment length: 5 columns",
+        )
+        self.assertEqual(
+            viewer.selected_region_export_summary(),
+            "1 sequence • Columns 3–3 • Region length: 1 columns",
+        )
+
+        # A rectangular region across rows preserves only its selected columns,
+        # while selected-row export preserves every row in full and retains gaps.
+        viewer._grid.select_rectangle(1, 1, 2, 3)
+        self.assertEqual(
+            viewer.selected_rows_fasta_text(),
+            ">IK345\nATG-C\n>IK346\nATGTC\n",
+        )
+        self.assertEqual(
+            viewer.selection_fasta_text(),
+            ">IK345\nTG-\n>IK346\nTGT\n",
+        )
+        self.assertEqual(
+            viewer.selected_region_export_summary(),
+            "2 sequences • Columns 2–4 • Region length: 3 columns",
+        )
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            rows_path = root / "selected_rows.fasta"
+            region_path = root / "selected_region.fasta"
+            self.assertEqual(
+                viewer.export_selected_rows_fasta(rows_path),
+                ">IK345\nATG-C\n>IK346\nATGTC\n",
+            )
+            self.assertEqual(
+                viewer.export_selection_fasta(region_path),
+                ">IK345\nTG-\n>IK346\nTGT\n",
+            )
+            self.assertEqual(rows_path.read_text(encoding="utf-8"), ">IK345\nATG-C\n>IK346\nATGTC\n")
+            self.assertEqual(region_path.read_text(encoding="utf-8"), ">IK345\nTG-\n>IK346\nTGT\n")
+
+        # Cancelling either explicit export never changes the saved alignment.
+        with patch(
+            "widgets.viewers.alignment_viewer.QFileDialog.getSaveFileName",
+            return_value=("", ""),
+        ):
+            self.assertIsNone(viewer.request_export_selected_rows_fasta())
+            self.assertIsNone(viewer.request_export_selection_fasta())
+        self.assertEqual(alignment.get_record("IK345").aligned_sequence, "ATG-C")
+        self.assertEqual(alignment.get_record("IK346").aligned_sequence, "ATGTC")
+
+    def test_alignment_selected_fasta_exports_require_an_explicit_selection(self) -> None:
+        alignment = AlignmentDataset(
+            alignment_id="coi-alignment",
+            name="COI Alignment",
+            parent_dataset_id="coi-import",
+            records=(AlignmentRecord("IK345", "IK345", "ATG-C"),),
+        )
+        viewer = AlignmentViewer(alignment)
+        viewer._grid.clear_selection()
+
+        self.assertEqual(viewer.selected_rows_fasta_text(), "")
+        self.assertEqual(viewer.selection_fasta_text(), "")
+        with TemporaryDirectory() as directory, patch(
+            "widgets.viewers.alignment_viewer.QFileDialog.getSaveFileName"
+        ) as save_dialog:
+            self.assertIsNone(viewer.request_export_selected_rows_fasta())
+            self.assertIsNone(viewer.request_export_selection_fasta())
+            self.assertFalse((Path(directory) / "unexpected.fasta").exists())
+        save_dialog.assert_not_called()
+        with self.assertRaises(ValueError):
+            viewer.export_selected_rows_fasta(Path("unused.fasta"))
+        with self.assertRaises(ValueError):
+            viewer.export_selection_fasta(Path("unused.fasta"))
+
+        # A grid refresh cannot leave a stale selection exportable.
+        viewer._grid.select_rectangle(1, 0, 1, 0)
+        viewer._grid.set_rows((), preserve_selection=True)
+        self.assertEqual(viewer.selected_rows_fasta_text(), "")
+        self.assertEqual(viewer.selection_fasta_text(), "")
+
+    def test_alignment_selected_fasta_export_actions_are_unambiguous(self) -> None:
+        alignment = AlignmentDataset(
+            alignment_id="coi-alignment",
+            name="COI Alignment",
+            parent_dataset_id="coi-import",
+            records=(AlignmentRecord("IK345", "IK345", "ATG-C"),),
+        )
+        viewer = AlignmentViewer(alignment)
+        actions = {action.action_id: action for action in viewer.action_providers[0].actions_for(viewer)}
+
+        self.assertEqual(actions["alignment.export_selected_rows_fasta"].label, "Export Selected Rows as FASTA…")
+        self.assertEqual(actions["alignment.export_selection_fasta"].label, "Export Selected Region as FASTA…")
+        self.assertNotIn("Export Selected Sequences", actions["alignment.export_selection_fasta"].label)
 
     def test_pending_alignment_edits_cannot_silently_export_saved_revision(self) -> None:
         alignment = AlignmentDataset(

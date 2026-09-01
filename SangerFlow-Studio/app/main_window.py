@@ -591,9 +591,12 @@ class MainWindow(QMainWindow):
     def _close_project(self) -> None:
         if not self._state.current_project:
             return
-        if not self._confirm_discard_or_save():
+        close_transaction = self._prepare_project_close_transaction()
+        if close_transaction is None:
             return
-        self._controller.close_project()
+        if not self._commit_project_close_transaction(close_transaction):
+            return
+        self._controller.finalize_project_close()
         self.statusBar().showMessage("Project closed", 5000)
 
     def _save_project_as(self) -> bool:
@@ -651,23 +654,74 @@ class MainWindow(QMainWindow):
             return None
         return None
 
-    def _confirm_discard_or_save(self) -> bool:
-        if not self._state.is_dirty:
-            return True
+    def _project_close_decision(self, *, force_prompt: bool = False) -> str:
+        """Return a Project-close intent without saving, closing, or discarding."""
+
+        if not force_prompt and not self._state.is_dirty:
+            return "clean"
+        message = "The current Project has unsaved changes."
+        if force_prompt and not self._state.is_dirty:
+            message = (
+                "Saving pending editor edits will create a new Project revision. "
+                "Save the Project before closing?"
+            )
         response = QMessageBox.warning(
             self,
             "Unsaved Project Changes",
-            "The current Project has unsaved changes.",
+            message,
             QMessageBox.StandardButton.Save
             | QMessageBox.StandardButton.Discard
             | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Save,
         )
         if response == QMessageBox.StandardButton.Save:
-            return self._save_project()
+            return "save"
         if response == QMessageBox.StandardButton.Discard:
-            return True
-        return False
+            return "discard"
+        return "cancel"
+
+    def _confirm_discard_or_save(self) -> bool:
+        """Compatibility wrapper for navigation paths that do not close tabs."""
+
+        decision = self._project_close_decision()
+        if decision == "cancel":
+            return False
+        return decision != "save" or self._save_project()
+
+    def _prepare_project_close_transaction(self) -> tuple[str, object] | None:
+        """Collect every close intent before any editor or tab can mutate.
+
+        A late Cancel therefore leaves all working copies and Project state
+        exactly as they were at the start of Project Close/application quit.
+        """
+
+        project_decision = self._project_close_decision()
+        if project_decision == "cancel":
+            return None
+        close_plan = self._controller.prepare_project_close()
+        if close_plan is None:
+            return None
+        if (
+            project_decision == "clean"
+            and bool(getattr(close_plan, "requires_project_persistence", False))
+        ):
+            project_decision = self._project_close_decision(force_prompt=True)
+            if project_decision == "cancel":
+                return None
+        return project_decision, close_plan
+
+    def _commit_project_close_transaction(self, transaction: tuple[str, object]) -> bool:
+        """Commit an already-approved close transaction in safe order."""
+
+        project_decision, close_plan = transaction
+        if not self._controller.commit_project_close_changes(close_plan):
+            return False
+        # Editor saves can create immutable revisions.  Persist them before
+        # tabs are removed, so a failed bundle save leaves visible working
+        # context rather than silently closing the Project.
+        if project_decision == "save" and not self._save_project():
+            return False
+        return self._controller.finalize_project_close_tabs(close_plan)
 
     def _update_window_title(self) -> None:
         project = self._state.current_project
@@ -680,7 +734,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(title)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        if self._confirm_discard_or_save():
-            event.accept()
-        else:
+        close_transaction = self._prepare_project_close_transaction()
+        if close_transaction is None:
             event.ignore()
+            return
+        if not self._commit_project_close_transaction(close_transaction):
+            event.ignore()
+            return
+        self._controller.finalize_project_close()
+        event.accept()

@@ -18,10 +18,12 @@ from app.selection import SelectionKind, StudioSelection
 from app.tab_manager import TabManager
 from controllers.project_controller import ProjectController
 from core.analysis_result import AnalysisResultType
+from core.project import Project
 from core.sequence_dataset import SequenceDataset, SourceType
 from PySide6.QtWidgets import QApplication
 from widgets.viewers import BaseViewer, ViewerContext, ViewerRegistry
 from widgets.workspace_tabs import WorkspaceTabs
+from views.project_view import ProjectView
 
 
 class ExampleViewer(BaseViewer):
@@ -40,6 +42,14 @@ class ExampleViewer(BaseViewer):
 
     def open_result(self, result: object) -> None:
         self.result = result
+
+
+class CancelCloseViewer(ExampleViewer):
+    def prepare_close(self) -> None:
+        return None
+
+    def close_viewer(self) -> bool:
+        return False
 
 
 class ViewerFrameworkTests(unittest.TestCase):
@@ -172,6 +182,26 @@ class ViewerFrameworkTests(unittest.TestCase):
 
         self.assertEqual(manager.viewer_ids(), ())
         self.assertEqual(tabs.count(), 2)
+
+    def test_project_close_respects_a_viewer_cancelled_unsaved_edit_prompt(self) -> None:
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        state.set_project(Project.create("project", "Project"))
+        already_clean = ExampleViewer("Already Clean", "already-clean")
+        blocking = CancelCloseViewer("Unsaved Editor", "unsaved-editor")
+        not_yet_asked = ExampleViewer("Other Editor", "other-editor")
+        view.tab_manager.open_viewer(already_clean, resource_key="dataset:clean")
+        view.tab_manager.open_viewer(blocking, resource_key="dataset:unsaved")
+        view.tab_manager.open_viewer(not_yet_asked, resource_key="dataset:other")
+
+        self.assertFalse(controller.close_project())
+        self.assertIsNotNone(state.current_project)
+        self.assertEqual(
+            view.tab_manager.viewer_ids(),
+            ("already-clean", "unsaved-editor", "other-editor"),
+        )
+        view.close()
 
     def test_studio_selection_helpers(self) -> None:
         project = _Project()

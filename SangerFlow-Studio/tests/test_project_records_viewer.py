@@ -20,7 +20,7 @@ from app.qt_runtime import configure_qt_plugins
 configure_qt_plugins()
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from app.app_state import AppState
 from app.main_window import MainWindow
@@ -31,6 +31,7 @@ from core.project import Project
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 from widgets.viewers.project_records_viewer import (
     ProjectRecordsViewer,
+    _CreateDatasetScopeDialog,
     _ResolveRecordIdCollisionsDialog,
 )
 from widgets.viewers.viewer_context import ViewerContext
@@ -180,7 +181,7 @@ class ProjectRecordsViewerTests(unittest.TestCase):
         self._set_checked(RecordRef("Run_A", "C1"))
         self._set_checked(RecordRef("Run_B", "C4"))
         self.assertEqual(self.viewer.selected_record_refs, (RecordRef("Run_A", "C1"), RecordRef("Run_B", "C4")))
-        self.assertEqual(self.viewer._selection_summary.text(), "2 records selected (4 visible) from 2 datasets")
+        self.assertEqual(self.viewer._selection_summary.text(), "2 selected · 2 visible · 0 hidden")
 
         self.viewer._search.setText("island")
         self.assertEqual(self.viewer.table_model.rowCount(), 1)
@@ -372,6 +373,72 @@ class ProjectRecordsViewerTests(unittest.TestCase):
             (RecordRef("Run_B", "C1"),),
         )
         self.assertEqual(self.project.get_dataset("Run_A").sequence_ids, ("C1", "C2"))
+
+    def test_same_source_batch_collision_resolution_generates_unique_output_only_ids(self) -> None:
+        refs = (RecordRef("Run_A", "C1"), RecordRef("Run_B", "C1"))
+        dialog = _ResolveRecordIdCollisionsDialog(
+            self.viewer,
+            collisions={"C1": refs},
+            source_batches={refs[0]: "0713", refs[1]: "0713"},
+            existing_output_ids={refs[0]: "C1", refs[1]: "C1"},
+        )
+        try:
+            self.assertEqual(
+                dialog.output_record_ids,
+                {refs[0]: "0713_C1", refs[1]: "0713_C1_2"},
+            )
+        finally:
+            dialog.deleteLater()
+
+        derived = self.controller.create_dataset_from_project_record_refs(
+            refs,
+            dataset_id="same_batch_collision",
+            name="Same batch collision",
+            output_record_ids={refs[0]: "0713_C1", refs[1]: "0713_C1_2"},
+        )
+        self.assertEqual(derived.sequence_ids, ("0713_C1", "0713_C1_2"))
+        self.assertEqual(derived.get_record("0713_C1_2").metadata["original_record_id"], "C1")
+        self.assertEqual(
+            derived.get_record("0713_C1_2").provenance.source_records,
+            (RecordRef("Run_B", "C1"),),
+        )
+        self.assertEqual(self.project.get_dataset("Run_A").sequence_ids, ("C1", "C2"))
+
+    def test_project_records_description_is_optional_not_default(self) -> None:
+        self.assertNotIn("Description", self.viewer.table_model.columns)
+        self.viewer._toggle_optional_base_column("Description", True)
+        self.assertIn("Description", self.viewer.table_model.columns)
+        description_column = self.viewer.table_model.columns.index("Description")
+        self.assertEqual(
+            self.viewer.table_model.data(
+                self.viewer.table_model.index(0, description_column),
+                Qt.ItemDataRole.DisplayRole,
+            ),
+            "Northern sample",
+        )
+
+    def test_hidden_selection_summary_and_scope_dialog_identify_hidden_records(self) -> None:
+        visible_ref = RecordRef("Run_A", "C1")
+        hidden_ref = RecordRef("Run_B", "C4")
+        self._set_checked(visible_ref)
+        self._set_checked(hidden_ref)
+        self.viewer._search.setText("C1")
+        self.assertEqual(self.viewer._selection_summary.text(), "2 selected · 1 visible · 1 hidden")
+
+        dialog = _CreateDatasetScopeDialog(
+            self.viewer,
+            visible_count=1,
+            total_count=2,
+            hidden_records=(("C4", "Run B display"),),
+        )
+        try:
+            labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+            self.assertIn("1 selected record is currently visible.", labels)
+            self.assertIn("1 additional selected record is hidden", labels)
+            self.assertIn("C4 — Run B display", labels)
+            self.assertTrue(dialog.use_visible_selection)
+        finally:
+            dialog.deleteLater()
 
     def test_create_dataset_flow_requires_explicit_batch_prefix_for_collision(self) -> None:
         refs = (RecordRef("Run_A", "C1"), RecordRef("Run_B", "C1"))

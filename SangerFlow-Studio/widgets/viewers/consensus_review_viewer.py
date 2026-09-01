@@ -25,6 +25,7 @@ from export.sequence_export import (
     export_dataset_to_nexus,
     export_dataset_to_phylip,
 )
+from widgets.base_palette import base_identity_color
 from widgets.font_utils import fixed_width_font
 from widgets.viewers.base_viewer import BaseViewer
 from widgets.viewers.viewer_actions import ViewerAction
@@ -101,6 +102,16 @@ class ConsensusReviewViewer(BaseViewer):
         )
 
     @property
+    def has_pending_scientific_changes(self) -> bool:
+        """Whether the reviewed consensus differs from its immutable source."""
+
+        return bool(self._changes_by_position)
+
+    @property
+    def is_dirty(self) -> bool:
+        return self.has_pending_scientific_changes
+
+    @property
     def action_providers(self) -> tuple[object, ...]:
         return (self._action_provider,)
 
@@ -173,6 +184,33 @@ class ConsensusReviewViewer(BaseViewer):
         if not callable(create):
             return self.create_reviewed_dataset()
         return create(self)
+
+    def close_viewer(self) -> bool:
+        intent = self.prepare_close()
+        return intent is not None and self.commit_close(intent)
+
+    def prepare_close(self) -> str | None:
+        """Collect a reviewed-consensus close choice without changing it."""
+
+        if not self.has_pending_scientific_changes:
+            return "close"
+        choice = QMessageBox.warning(
+            self,
+            "Unsaved Consensus Review Edits",
+            "This consensus review has pending scientific edits.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if choice == QMessageBox.StandardButton.Cancel:
+            return None
+        return "save" if choice == QMessageBox.StandardButton.Save else "discard"
+
+    def commit_close(self, intent: object) -> bool:
+        if intent == "save":
+            return self.create_and_register_reviewed_dataset() is not None
+        return True
 
     def export_reviewed_dataset(self) -> None:
         dataset = self.create_reviewed_dataset()
@@ -422,15 +460,7 @@ def _base_item(base: str, font: QFont) -> QTableWidgetItem:
 
 
 def _base_color(base: str) -> QColor:
-    colors = {
-        "A": QColor("green"),
-        "T": QColor("red"),
-        "G": QColor("black"),
-        "C": QColor("blue"),
-        "N": QColor("#555555"),
-        "-": QColor("#777777"),
-    }
-    return colors.get(base.upper(), QColor("#555555"))
+    return base_identity_color(base, fallback="#555555")
 
 
 def _safe_identifier(value: str | None) -> str:

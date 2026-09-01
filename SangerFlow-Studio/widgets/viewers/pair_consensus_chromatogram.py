@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from core.models import SangerRead
+from widgets.base_palette import BASE_IDENTITY_COLORS, base_identity_color
 from widgets.font_utils import fixed_width_font
 from widgets.viewers.alignment_trace_geometry import (
     alignment_column_x,
@@ -31,12 +32,7 @@ PAIR_TRACE_GAIN = 0.022
 PAIR_BASE_Y_OFFSET = -22
 PAIR_TRACE_BOTTOM_OFFSET = -12
 
-_TRACE_COLORS = {
-    "A": QColor("green"),
-    "T": QColor("red"),
-    "G": QColor("black"),
-    "C": QColor("blue"),
-}
+_TRACE_COLORS = BASE_IDENTITY_COLORS
 
 
 class PairConsensusChromatogramPanel(QWidget):
@@ -326,7 +322,7 @@ class _PairConsensusChromatogramCanvas(QWidget):
             x = alignment_column_x(column, left_margin=PAIR_NAME_WIDTH, column_width=PAIR_COLUMN_WIDTH)
             evidence = self._panel.evidence_for(column - 1)
             base = "-" if trace_position is None else getattr(evidence, f"{side}_base", "?")
-            painter.setPen(QPen(_TRACE_COLORS.get(base.upper(), QColor("#666666"))))
+            painter.setPen(QPen(_TRACE_COLORS.get(base.upper(), base_identity_color(base))))
             painter.drawText(
                 QRectF(x - PAIR_COLUMN_WIDTH / 2, top + 3, PAIR_COLUMN_WIDTH, 14),
                 Qt.AlignmentFlag.AlignCenter,

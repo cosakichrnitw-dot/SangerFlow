@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMessageBox,
+    QPushButton,
     QVBoxLayout,
 )
 
@@ -69,9 +70,25 @@ class SequenceEditor(BaseViewer):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         self._summary = QLabel()
+        self._manual_edit_legend = QLabel(
+            "Blue cells are manually edited bases in this working copy."
+        )
+        self._manual_edit_legend.setToolTip(
+            "These edits are not written to the source Dataset. Save Changes as New Revision "
+            "to create a new immutable Dataset revision."
+        )
         self._status = QLabel("Select a base to edit or review source evidence.")
+        self._save_revision_button = QPushButton("Save Changes as New Revision")
+        self._save_revision_button.setObjectName("saveChangesAsNewRevisionButton")
+        self._save_revision_button.setToolTip(
+            "Save this working copy as a new immutable Dataset revision. "
+            "The current revision remains preserved."
+        )
+        self._save_revision_button.clicked.connect(self.save_edited_revision)
         layout.addWidget(self._summary)
+        layout.addWidget(self._manual_edit_legend)
         layout.addWidget(self._status)
+        layout.addWidget(self._save_revision_button)
         self._grid = SequenceGridWidget(self)
         self._grid.setObjectName("unalignedSequenceEditorGrid")
         self._grid.cell_selected.connect(self._cell_selected)
@@ -102,16 +119,32 @@ class SequenceEditor(BaseViewer):
             if base != self._document.original_sequence(row.row_id)[position]
         }
         self._grid.set_rows(rows, edited_cells=edited)
-        pending = []
-        if self._document.is_dirty:
-            pending.append("Unsaved scientific changes")
+        pending = [
+            "Editing working copy • Unsaved edits"
+            if self._document.is_dirty
+            else "Editing working copy • No unsaved edits"
+        ]
         if self._document.deleted_row_ids:
             pending.append(f"{len(self._document.deleted_row_ids)} pending deletion")
         if self._document.hidden_row_ids:
             pending.append(f"{len(self._document.hidden_row_ids)} temporarily hidden")
         suffix = " • " + " • ".join(pending) if pending else ""
         self._summary.setText(f"{len(rows)} sequences • Unaligned{suffix}")
+        self._manual_edit_legend.setVisible(bool(edited))
         self._is_dirty = self._document.is_dirty
+        self._save_revision_button.setEnabled(
+            self._document.is_dirty and self._editability_error() is None
+        )
+
+    def show_revision_saved_feedback(self, message: str) -> None:
+        """Show Controller-confirmed immutable-revision feedback in the new editor."""
+
+        self._status.setText(str(message))
+        self._status.setToolTip(
+            "The source Dataset revision remains preserved. Use Save Project to persist "
+            "the Project and its new revision to disk."
+        )
+        self.status_message_changed.emit(str(message))
 
     def _cell_selected(self, row_id: str, column: int, base: str) -> None:
         self._selected = (row_id, column)
@@ -418,12 +451,25 @@ class SequenceEditor(BaseViewer):
         return changed
 
     def close_viewer(self) -> bool:
+        intent = self.prepare_close()
+        return intent is not None and self.commit_close(intent)
+
+    def prepare_close(self) -> str | None:
+        """Ask for an edit-close intent without saving or discarding yet."""
+
         if not self.is_dirty:
-            return True
+            return "close"
         choice = QMessageBox.question(self, "Unsaved Sequence Edits", "Save edited Dataset revision before closing?", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Save)
         if choice is QMessageBox.StandardButton.Cancel:
-            return False
+            return None
         if choice is QMessageBox.StandardButton.Save:
+            return "save"
+        return "discard"
+
+    def commit_close(self, intent: object) -> bool:
+        """Apply an already-confirmed Sequence Editor close intent."""
+
+        if intent == "save":
             return self.save_edited_revision() is not None
         return True
 
@@ -464,7 +510,7 @@ class _SequenceEditorActionProvider:
         )
         export_available = not viewer.is_dirty
         return (
-            ViewerAction("sequence_editor.save", "Save Edited Sequences", viewer.save_edited_revision, "Create the next immutable SequenceDataset revision", enabled=editable and viewer.is_dirty, toolbar=True, menu_group="Dataset", priority=100),
+            ViewerAction("sequence_editor.save", "Save Changes as New Revision", viewer.save_edited_revision, "Save edits as a new immutable Dataset revision. The previous revision is preserved.", enabled=editable and viewer.is_dirty, toolbar=True, menu_group="Dataset", priority=100),
             ViewerAction("sequence_editor.undo", "Undo", viewer.undo, "Undo latest sequence edit", toolbar=True, menu_group="Edit", priority=90),
             ViewerAction("sequence_editor.redo", "Redo", viewer.redo, "Redo latest sequence edit", toolbar=True, menu_group="Edit", priority=89),
             ViewerAction("sequence_editor.copy", "Copy", viewer.copy_selection, "Copy selected bases", menu_group="Edit", context_scope="cell"),

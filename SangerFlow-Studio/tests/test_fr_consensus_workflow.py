@@ -30,7 +30,7 @@ from persistence.project_bundle import load_project_bundle, save_project_bundle
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QToolBar
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QToolBar
 from views.project_view import ProjectView
 from widgets.consensus_settings_dialog import ConsensusSettingsDialog
 from widgets.viewers.chromatogram_viewer import ChromatogramViewer
@@ -42,6 +42,7 @@ from widgets.viewers.fr_consensus_review import (
     ResolvePairDialog,
     build_consensus_sample_rows,
 )
+from widgets.viewers.consensus_decision_presentation import decision_reason_label
 from widgets.viewers.pair_consensus_chromatogram import PairConsensusChromatogramPanel
 
 
@@ -247,6 +248,55 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         single._grid.select_rectangle(2, 0, 3, 2)
         self.assertIn("Multiple positions selected", single._detail_label.text())
 
+    def test_single_review_presents_automatic_and_manual_consensus_evidence(self) -> None:
+        reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
+        single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
+
+        single.select_position(0)
+        detail = single._detail_label.text()
+        self.assertIn("Automatic decision: A", detail)
+        self.assertIn("Automatic reason: Forward and reverse reads agree", detail)
+        self.assertIn("Reviewed base: A (Not changed)", detail)
+        self.assertIn("Forward evidence:", detail)
+        self.assertIn("Reverse evidence:", detail)
+
+        single.select_position(1)
+        self.assertIn("Selected consensus position: 2", single._detail_label.text())
+        self.assertIn("Automatic decision: T", single._detail_label.text())
+
+        single.select_position(0)
+        single.set_base(0, "N")
+        self.assertIn("Automatic decision: A", single._detail_label.text())
+        self.assertIn("Reviewed base: N (Manual change)", single._detail_label.text())
+
+    def test_decision_reason_presentation_is_complete_and_safe_for_missing_values(self) -> None:
+        expected = {
+            "TWO_SIDED_AGREEMENT": "Forward and reverse reads agree",
+            "INSUFFICIENT_EVIDENCE": "Insufficient evidence from both reads",
+            "HIGHER_QUALITY_FORWARD": "Forward read has stronger evidence",
+            "HIGHER_QUALITY_REVERSE": "Reverse read has stronger evidence",
+            "UNRESOLVED_CONFLICT": "Forward and reverse reads disagree without enough evidence to choose one base",
+            "ONE_SIDED_FORWARD": "Forward read only",
+            "ONE_SIDED_REVERSE": "Reverse read only",
+            "LOW_QUALITY": "Available evidence is too low quality",
+            "GAP_ONLY": "No base is available from either read at this alignment column",
+            "AMBIGUOUS_INPUT": "Ambiguous input evidence",
+        }
+        for reason, label in expected.items():
+            self.assertEqual(decision_reason_label(reason), label)
+        self.assertEqual(decision_reason_label(None), "Decision reason unavailable")
+        self.assertEqual(decision_reason_label("FUTURE_REASON"), "Decision reason unavailable")
+
+    def test_single_review_handles_missing_decision_reason_without_crashing(self) -> None:
+        reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
+        single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
+        # Simulate an older persisted evidence object that lacks a usable reason.
+        object.__setattr__(single._view_model.columns[0].review_evidence, "decision_reason", None)
+
+        single.select_position(0)
+        self.assertIn("Automatic decision: A", single._detail_label.text())
+        self.assertIn("Automatic reason: Decision reason unavailable", single._detail_label.text())
+
     def test_single_review_bulk_selection_edit_is_one_undo_operation(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
         rows = build_consensus_sample_rows(reads)
@@ -405,7 +455,10 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         self.assertEqual(single.selected_position, 1)
         self.assertEqual(single._grid.selection.active_column, 1)
         self.assertEqual(single._pair_chromatogram.selected_column, 1)
-        self.assertIn("UNRESOLVED_CONFLICT", single._detail_label.text())
+        self.assertIn(
+            "Automatic reason: Forward and reverse reads disagree without enough evidence to choose one base",
+            single._detail_label.text(),
+        )
         self.assertTrue(single.previous_conflict())
         self.assertEqual(single.selected_position, 1)
 
@@ -782,6 +835,28 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         self.assertEqual(multiple.pending_deleted_row_ids, frozenset())
         self.assertIn("IK345", tuple(row.row_id for row in multiple._grid.rows))
         self.assertTrue(multiple.redo())
+
+    def test_multiple_review_temporary_alignment_sample_label_explains_scope(self) -> None:
+        reads = (
+            _read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"),
+            _read("IK346_F.ab1", "ATGA"), _read("IK346_R.ab1", "TCAT"),
+        )
+        multiple = MultipleConsensusReviewViewer(build_consensus_sample_rows(reads))
+        labels = tuple(label for label in multiple.findChildren(QLabel))
+        label = next(item for item in labels if item.text() == "Samples for temporary alignment:")
+
+        self.assertNotIn("Review samples:", tuple(item.text() for item in labels))
+        self.assertIn("temporary alignment preview", label.toolTip())
+        self.assertIn("does not change review status", label.toolTip())
+        self.assertEqual(multiple.selected_alignment_sample_ids(), ("IK345", "IK346"))
+
+        multiple._sample_visibility["IK346"].setChecked(False)
+        self.assertEqual(multiple.selected_alignment_sample_ids(), ("IK345",))
+
+        self.assertTrue(multiple.select_cell("IK345", 0))
+        self.assertIn("Automatic decision: A", multiple._detail_label.text())
+        self.assertIn("Automatic reason: Forward and reverse reads agree", multiple._detail_label.text())
+        self.assertIn("Reviewed base: A (Not changed)", multiple._detail_label.text())
 
     def test_multiple_review_strict_substitution_paste_is_undoable(self) -> None:
         reads = (

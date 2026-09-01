@@ -26,6 +26,7 @@ from core.project import Project
 from core.sequence_dataset import SequenceDataset, SequenceRecord, SourceType
 from core.trimming import trim_sequence
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtGui import QFontMetricsF
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsView, QMainWindow, QToolBar
 from app.read_visibility import ReadVisibilityManager
 from views.project_view import ProjectView
@@ -34,6 +35,7 @@ from widgets.viewers.chromatogram_viewer import (
     ChromatogramViewer,
     TRACE_HEIGHT,
     TRACE_TOP,
+    _centered_text_baseline,
     has_chromatogram_sources,
     reads_from_dataset,
     _read_view,
@@ -107,6 +109,59 @@ class ChromatogramViewerTests(unittest.TestCase):
         self.assertFalse(hasattr(viewer, "_sample_panel_widget"))
         self.assertFalse(hasattr(viewer, "_label_widget"))
         self.assertEqual(viewer._read_label_widget.width(), 110)
+
+    def test_read_labels_share_scene_row_geometry_for_small_and_scrollable_read_sets(self) -> None:
+        """Labels and traces stay on the same row centers for every read count."""
+
+        for read_count in (1, 2, 4, 10, 24):
+            with self.subTest(read_count=read_count):
+                reads = tuple(
+                    _read_untrimmed(f"read_{index}.ab1", "ATGCATGCATGC")
+                    for index in range(read_count)
+                )
+                viewer = ChromatogramViewer(reads, title="Chromatograms")
+                viewer._canvas_widget.setFixedSize(240, 180)
+                viewer._read_label_widget.setFixedHeight(180)
+                viewer.refresh()
+                self.application.processEvents()
+
+                self.assertEqual(
+                    viewer._canvas_widget.alignment(),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                )
+                self.assertEqual(viewer._content_height(), read_count * viewer._row_height())
+                for row_index, read_view in enumerate(viewer.visible_read_views):
+                    geometry = viewer._row_geometry(row_index)
+                    item = viewer._canvas_widget.row_items[read_view.read_id]
+                    self.assertEqual(item.pos().y(), geometry.top())
+                    self.assertEqual(viewer._read_label_widget._row_center_y(row_index), geometry.center().y())
+
+                # Horizontal navigation and selection must not alter a label's
+                # vertical relationship to its trace row.
+                viewer._horizontal_scrollbar.setValue(min(20, viewer._horizontal_scrollbar.maximum()))
+                viewer.select_read(reads[-1].filename)
+                self.assertEqual(
+                    viewer._read_label_widget._row_center_y(read_count - 1),
+                    viewer._row_geometry(read_count - 1).center().y(),
+                )
+
+                if read_count > 10:
+                    y_offset = min(viewer._vertical_scrollbar.maximum(), viewer._row_height() + 7)
+                    viewer._vertical_scrollbar.setValue(y_offset)
+                    metrics = QFontMetricsF(viewer._read_label_widget.font())
+                    center = viewer._read_label_widget._row_center_y(1) - viewer._y_offset
+                    baseline = _centered_text_baseline(center, metrics)
+                    glyph_center = baseline + (metrics.descent() - metrics.ascent()) / 2
+                    self.assertAlmostEqual(glyph_center, center)
+
+                # A resize can change viewport space, but never content rows.
+                viewer._canvas_widget.resize(320, 260)
+                viewer._update_scroll_ranges()
+                for row_index, read_view in enumerate(viewer.visible_read_views):
+                    self.assertEqual(
+                        viewer._canvas_widget.row_items[read_view.read_id].pos().y(),
+                        viewer._row_geometry(row_index).top(),
+                    )
 
     def test_closed_chromatogram_viewers_receive_no_visibility_callback(self) -> None:
         manager = ReadVisibilityManager()

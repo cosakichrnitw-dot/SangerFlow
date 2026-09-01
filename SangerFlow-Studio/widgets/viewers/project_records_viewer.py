@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,12 +33,14 @@ from PySide6.QtWidgets import (
 from core.lineage import RecordRef
 from core.project import Project, RevisionState
 from core.sequence_dataset import SequenceDataset
+from widgets.dataset_creation_dialog import CreateDatasetDialog as _CreateDatasetDialog
 from widgets.quality_metrics import format_hq_percent
 from widgets.viewers.base_viewer import BaseViewer
 from workflow.cross_dataset_builder import CrossDatasetSelectionValidation, validate_record_refs
 
 
-_BASE_COLUMNS = ("Select", "Record ID", "Dataset", "Length", "HQ%", "Source Type", "Description")
+_BASE_COLUMNS = ("Select", "Record ID", "Dataset", "Length", "HQ%", "Source Type")
+_OPTIONAL_BASE_COLUMNS = ("Description",)
 _COMMON_METADATA_FIELDS = ("source_batch", "Species", "Location", "Population", "Country")
 _CATEGORICAL_METADATA_FIELDS = frozenset({
     "source_batch",
@@ -165,6 +166,7 @@ class ProjectRecordsModel(QAbstractTableModel):
         self._include_previous = False
         self._include_archived = False
         self._metadata_conditions: tuple[tuple[str, str, str], ...] = ()
+        self._optional_base_columns: tuple[str, ...] = ()
         self._metadata_columns: tuple[str, ...] = ()
         self._length_value: int | None = None
         self._length_operator = ">="
@@ -173,13 +175,17 @@ class ProjectRecordsModel(QAbstractTableModel):
 
     @property
     def columns(self) -> tuple[str, ...]:
-        return _BASE_COLUMNS + tuple(_metadata_label(field) for field in self._metadata_columns)
+        return (
+            _BASE_COLUMNS
+            + self._optional_base_columns
+            + tuple(_metadata_label(field) for field in self._metadata_columns)
+        )
 
     @property
     def column_keys(self) -> tuple[str, ...]:
         """Canonical keys backing visible table headers."""
 
-        return _BASE_COLUMNS + self._metadata_columns
+        return _BASE_COLUMNS + self._optional_base_columns + self._metadata_columns
 
     @property
     def all_rows(self) -> tuple[ProjectRecordRow, ...]:
@@ -216,10 +222,14 @@ class ProjectRecordsModel(QAbstractTableModel):
             return Qt.CheckState.Checked if row.record_ref in self._selected_refs else Qt.CheckState.Unchecked
         if role != Qt.ItemDataRole.DisplayRole:
             return None
-        values = ("", row.record_id, row.dataset_name, str(row.length), row.hq_percent, row.source_type, row.description)
-        if index.column() < len(values):
-            return values[index.column()]
-        return row.metadata_value(self._metadata_columns[index.column() - len(_BASE_COLUMNS)])
+        base_values = ("", row.record_id, row.dataset_name, str(row.length), row.hq_percent, row.source_type)
+        if index.column() < len(base_values):
+            return base_values[index.column()]
+        optional_offset = index.column() - len(_BASE_COLUMNS)
+        if optional_offset < len(self._optional_base_columns):
+            return row.description
+        metadata_offset = optional_offset - len(self._optional_base_columns)
+        return row.metadata_value(self._metadata_columns[metadata_offset])
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:  # noqa: N802
         if not index.isValid():
@@ -255,6 +265,17 @@ class ProjectRecordsModel(QAbstractTableModel):
             return
         self.beginResetModel()
         self._metadata_columns = normalized
+        self._apply_filters()
+        self.endResetModel()
+
+    def set_optional_base_columns(self, columns: tuple[str, ...]) -> None:
+        normalized = tuple(
+            column for column in _OPTIONAL_BASE_COLUMNS if column in set(columns)
+        )
+        if normalized == self._optional_base_columns:
+            return
+        self.beginResetModel()
+        self._optional_base_columns = normalized
         self._apply_filters()
         self.endResetModel()
 
@@ -342,38 +363,6 @@ class ProjectRecordsModel(QAbstractTableModel):
         )
 
 
-class _CreateDatasetDialog(QDialog):
-    def __init__(self, parent: QWidget, *, suggested_id: str) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Create Dataset from Selected Records")
-        self._name = QLineEdit()
-        self._dataset_id = QLineEdit(suggested_id)
-        form = QFormLayout()
-        form.addRow("Dataset name", self._name)
-        form.addRow("Dataset ID", self._dataset_id)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(buttons)
-
-    @property
-    def dataset_name(self) -> str:
-        return self._name.text().strip()
-
-    @property
-    def dataset_id(self) -> str:
-        return self._dataset_id.text().strip()
-
-    def accept(self) -> None:  # noqa: D401
-        if not self.dataset_name or not self.dataset_id:
-            QMessageBox.warning(self, "Create Dataset", "Dataset name and Dataset ID are required.")
-            return
-        super().accept()
-
-
 class _ResolveRecordIdCollisionsDialog(QDialog):
     """Require an explicit, batch-based name decision for derived output."""
 
@@ -383,12 +372,24 @@ class _ResolveRecordIdCollisionsDialog(QDialog):
         *,
         collisions: Mapping[str, tuple[RecordRef, ...]],
         source_batches: Mapping[RecordRef, str],
+        existing_output_ids: Mapping[RecordRef, str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Duplicate Record Names")
         self._output_record_ids: dict[RecordRef, str] = {}
         details: list[str] = []
         unresolved: list[str] = []
+        collision_refs = {
+            record_ref
+            for refs in collisions.values()
+            for record_ref in refs
+        }
+        reserved_names = {
+            str(name).strip()
+            for record_ref, name in (existing_output_ids or {}).items()
+            if record_ref not in collision_refs and str(name).strip()
+        }
+        allocated_names = set(reserved_names)
         for record_id, refs in collisions.items():
             labels = []
             for record_ref in refs:
@@ -397,14 +398,22 @@ class _ResolveRecordIdCollisionsDialog(QDialog):
                 if not batch:
                     unresolved.append(record_id)
                     continue
-                self._output_record_ids[record_ref] = f"{batch}_{record_id}"
+                candidate = f"{batch}_{record_id}"
+                output_id = candidate
+                suffix = 2
+                while output_id in allocated_names:
+                    output_id = f"{candidate}_{suffix}"
+                    suffix += 1
+                self._output_record_ids[record_ref] = output_id
+                allocated_names.add(output_id)
             details.append(f"{record_id}:\n" + "\n".join(labels))
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Duplicate record names were found in the selected source records."))
         layout.addWidget(QLabel("\n\n".join(details)))
         self._explanation = QLabel(
-            "Only the output Dataset records will be renamed; source records remain unchanged."
+            "Only the output Dataset records will be renamed; source records remain unchanged. "
+            "If a Source Batch is shared, a deterministic number is added to keep output IDs unique."
         )
         self._explanation.setWordWrap(True)
         layout.addWidget(self._explanation)
@@ -430,7 +439,14 @@ class _ResolveRecordIdCollisionsDialog(QDialog):
 class _CreateDatasetScopeDialog(QDialog):
     """Require an explicit scope when a saved selection is partly filtered out."""
 
-    def __init__(self, parent: QWidget, *, visible_count: int, total_count: int) -> None:
+    def __init__(
+        self,
+        parent: QWidget,
+        *,
+        visible_count: int,
+        total_count: int,
+        hidden_records: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Create Derived Dataset")
         self._visible = QRadioButton(f"Visible selected records only ({visible_count})")
@@ -438,8 +454,20 @@ class _CreateDatasetScopeDialog(QDialog):
         self._visible.setChecked(True)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"{visible_count} records are currently visible and selected."))
-        layout.addWidget(QLabel(f"{total_count} records are selected in total."))
+        hidden_count = total_count - visible_count
+        layout.addWidget(
+            QLabel(
+                f"{visible_count} selected record{'s are' if visible_count != 1 else ' is'} currently visible."
+            )
+        )
+        layout.addWidget(QLabel(f"{hidden_count} additional selected record{'s are' if hidden_count != 1 else ' is'} hidden by the current filters."))
+        if hidden_records:
+            preview = [f"{record_id} — {dataset_name}" for record_id, dataset_name in hidden_records[:5]]
+            if len(hidden_records) > len(preview):
+                preview.append(f"and {len(hidden_records) - len(preview)} more")
+            hidden_label = QLabel("Hidden selected records:\n" + "\n".join(preview))
+            hidden_label.setWordWrap(True)
+            layout.addWidget(hidden_label)
         layout.addWidget(self._visible)
         layout.addWidget(self._all)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -600,7 +628,6 @@ class ProjectRecordsViewer(BaseViewer):
         self._table.setColumnWidth(3, 68)
         self._table.setColumnWidth(4, 70)
         self._table.setColumnWidth(5, 125)
-        self._table.setColumnWidth(6, 260)
         layout.addWidget(self._table, 1)
 
         footer = QHBoxLayout()
@@ -653,11 +680,16 @@ class ProjectRecordsViewer(BaseViewer):
             QMessageBox.warning(self, "Export Metadata", "Choose a .csv or .xlsx filename.")
             return None
         headers = self._model.columns[1:]
-        rows = []
-        for record in self._model.visible_rows:
-            base = (record.record_id, record.dataset_name, record.length, record.hq_percent, record.source_type, record.description)
-            metadata = tuple(record.metadata_value(field) for field in self._model.metadata_columns)
-            rows.append((*base, *metadata))
+        rows = [
+            tuple(
+                self._model.data(
+                    self._model.index(row_index, column_index),
+                    Qt.ItemDataRole.DisplayRole,
+                )
+                for column_index in range(1, self._model.columnCount())
+            )
+            for row_index in range(self._model.rowCount())
+        ]
         try:
             if suffix == ".csv":
                 with Path(filepath).open("w", encoding="utf-8", newline="") as handle:
@@ -736,6 +768,16 @@ class ProjectRecordsViewer(BaseViewer):
             )
             self._model.set_metadata_columns(defaults)
         self._columns_menu.clear()
+        optional_base_columns = set(
+            key for key in self._model.column_keys if key in _OPTIONAL_BASE_COLUMNS
+        )
+        for column in _OPTIONAL_BASE_COLUMNS:
+            action = self._columns_menu.addAction(column)
+            action.setCheckable(True)
+            action.setChecked(column in optional_base_columns)
+            action.toggled.connect(lambda checked, value=column: self._toggle_optional_base_column(value, checked))
+        if fields:
+            self._columns_menu.addSeparator()
         selected = set(self._model.metadata_columns)
         for field in fields:
             action = self._columns_menu.addAction(_metadata_label(field))
@@ -804,9 +846,26 @@ class ProjectRecordsViewer(BaseViewer):
         self._model.set_metadata_columns(tuple(fields))
         self._configure_dynamic_column_widths()
 
+    def _toggle_optional_base_column(self, column: str, checked: bool) -> None:
+        columns = [key for key in self._model.column_keys if key in _OPTIONAL_BASE_COLUMNS]
+        if checked and column not in columns:
+            columns.append(column)
+        elif not checked:
+            columns = [key for key in columns if key != column]
+        self._model.set_optional_base_columns(tuple(columns))
+        self._configure_dynamic_column_widths()
+
     def _configure_dynamic_column_widths(self) -> None:
+        optional_offset = len(_BASE_COLUMNS)
+        for offset, _column in enumerate(
+            key for key in self._model.column_keys if key in _OPTIONAL_BASE_COLUMNS
+        ):
+            self._table.setColumnWidth(optional_offset + offset, 260)
         for offset in range(len(self._model.metadata_columns)):
-            self._table.setColumnWidth(len(_BASE_COLUMNS) + offset, 150)
+            self._table.setColumnWidth(
+                len(_BASE_COLUMNS) + len(self._model._optional_base_columns) + offset,
+                150,
+            )
 
     def _update_filters(self) -> None:
         conditions = (
@@ -874,9 +933,12 @@ class ProjectRecordsViewer(BaseViewer):
 
     def _update_selection_summary(self) -> None:
         refs = self.selected_record_refs
-        source_count = len({record_ref.dataset_id for record_ref in refs})
+        visible_count = sum(
+            row.record_ref in self._selected_refs for row in self._model.visible_rows
+        )
+        hidden_count = len(refs) - visible_count
         self._selection_summary.setText(
-            f"{len(refs)} records selected ({len(self._model.visible_rows)} visible) from {source_count} datasets"
+            f"{len(refs)} selected · {visible_count} visible · {hidden_count} hidden"
         )
         self._create_button.setEnabled(bool(refs) and self._project is not None)
 
@@ -902,10 +964,17 @@ class ProjectRecordsViewer(BaseViewer):
             if row.record_ref in self._selected_refs
         )
         if visible_selected_refs and len(visible_selected_refs) != len(selected_refs):
+            visible_ref_set = set(visible_selected_refs)
+            hidden_records = tuple(
+                (row.record_id, row.dataset_name)
+                for row in self._model.all_rows
+                if row.record_ref in self._selected_refs and row.record_ref not in visible_ref_set
+            )
             scope_dialog = _CreateDatasetScopeDialog(
                 self,
                 visible_count=len(visible_selected_refs),
                 total_count=len(selected_refs),
+                hidden_records=hidden_records,
             )
             if scope_dialog.exec() != QDialog.DialogCode.Accepted:
                 return None
@@ -921,10 +990,16 @@ class ProjectRecordsViewer(BaseViewer):
                 row.record_ref: str(row.metadata.get("source_batch", ""))
                 for row in self._model.all_rows
             }
+            existing_output_ids = {
+                row.record_ref: row.record_id
+                for row in self._model.all_rows
+                if row.record_ref in selected_refs
+            }
             collision_dialog = _ResolveRecordIdCollisionsDialog(
                 self,
                 collisions=validation.output_id_collisions,
                 source_batches=source_batches,
+                existing_output_ids=existing_output_ids,
             )
             if collision_dialog.exec() != QDialog.DialogCode.Accepted:
                 return None

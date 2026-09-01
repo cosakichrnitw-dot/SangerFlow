@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtWidgets import QFileDialog, QInputDialog, QLabel, QMenu, QMessageBox, QVBoxLayout
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton, QVBoxLayout
 
 from core.alignment_dataset import AlignmentDataset, AlignmentRecord
 from core.project import RevisionState
@@ -136,6 +136,7 @@ class AlignmentViewer(BaseViewer):
             "alignment.undo",
             "alignment.redo",
             "alignment.copy_selection",
+            "alignment.export_selected_rows_fasta",
             "alignment.export_selection_fasta",
             "alignment.export_fasta",
             "alignment.export_nexus",
@@ -565,28 +566,102 @@ class AlignmentViewer(BaseViewer):
         return self._grid.copy_selection_to_clipboard()
 
     def selection_fasta_text(self) -> str:
+        """Return the selected row × column rectangle as aligned FASTA."""
+
         return self._grid.selected_fasta_text()
 
-    def export_selection_fasta(self, filepath: str | Path) -> str:
-        text = self.selection_fasta_text()
+    def selected_rows_fasta_text(self) -> str:
+        """Return complete selected AlignmentDataset rows as aligned FASTA.
+
+        The SequenceGrid also contains a transient consensus display row.  It
+        is intentionally not an AlignmentDataset record and must never become
+        part of a selected-row export.
+        """
+
+        selected_ids = set(self._grid.selected_rows())
+        entries = [
+            f">{record.record_id}\n{record.aligned_sequence}"
+            for record in self._dataset.records
+            if record.record_id in selected_ids
+        ]
+        return "\n".join(entries) + ("\n" if entries else "")
+
+    def selected_rows_export_summary(self) -> str | None:
+        selected_ids = set(self._grid.selected_rows())
+        count = sum(record.record_id in selected_ids for record in self._dataset.records)
+        if not count:
+            return None
+        return f"{count} sequence{'s' if count != 1 else ''} selected • Alignment length: {self.current_alignment_length} columns"
+
+    def selected_region_export_summary(self) -> str | None:
+        bounds = self._grid.selection_bounds()
+        if bounds is None:
+            return None
+        first_row, last_row, first_column, last_column = bounds
+        row_count = last_row - first_row + 1
+        region_length = last_column - first_column + 1
+        return (
+            f"{row_count} sequence{'s' if row_count != 1 else ''} • "
+            f"Columns {first_column + 1}–{last_column + 1} • "
+            f"Region length: {region_length} columns"
+        )
+
+    def export_selected_rows_fasta(self, filepath: str | Path) -> str:
+        text = self.selected_rows_fasta_text()
+        if not text:
+            raise ValueError("Select one or more AlignmentDataset rows before exporting.")
         path = Path(filepath)
         path.write_text(text, encoding="utf-8")
         return text
 
-    def request_export_selection_fasta(self) -> str | None:
-        if not self._allow_saved_alignment_export("Export Selection as FASTA"):
+    def export_selection_fasta(self, filepath: str | Path) -> str:
+        text = self.selection_fasta_text()
+        if not text:
+            raise ValueError("Select an alignment region before exporting.")
+        path = Path(filepath)
+        path.write_text(text, encoding="utf-8")
+        return text
+
+    def request_export_selected_rows_fasta(self) -> str | None:
+        if not self._allow_saved_alignment_export("Export Selected Rows as FASTA"):
+            return None
+        summary = self.selected_rows_export_summary()
+        if summary is None:
+            self.status_message_changed.emit("Select one or more alignment rows before exporting full rows as FASTA.")
             return None
         self._notify_exclusion_contract("selection export")
         filepath, _selected_filter = QFileDialog.getSaveFileName(
             self,
-            "Export Selection as FASTA",
-            self._default_export_path(f"{self._dataset.alignment_id}_selection.fasta"),
+            f"Export Selected Rows as FASTA — {summary}",
+            self._default_export_path(f"{self._dataset.alignment_id}_selected_rows.fasta"),
+            "FASTA files (*.fasta *.fa *.fas *.fna);;All files (*)",
+        )
+        if not filepath:
+            return None
+        text = self.export_selected_rows_fasta(filepath)
+        self.status_message_changed.emit(f"Selected rows exported ({summary}): {filepath}")
+        return text
+
+    def request_export_selection_fasta(self) -> str | None:
+        """Export the explicit row × column selection as an aligned FASTA region."""
+
+        if not self._allow_saved_alignment_export("Export Selected Region as FASTA"):
+            return None
+        summary = self.selected_region_export_summary()
+        if summary is None:
+            self.status_message_changed.emit("Select an alignment region before exporting it as FASTA.")
+            return None
+        self._notify_exclusion_contract("selection region export")
+        filepath, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            f"Export Selected Region as FASTA — {summary}",
+            self._default_export_path(f"{self._dataset.alignment_id}_selected_region.fasta"),
             "FASTA files (*.fasta *.fa *.fas *.fna);;All files (*)",
         )
         if not filepath:
             return None
         text = self.export_selection_fasta(filepath)
-        self.status_message_changed.emit(f"Selection exported: {filepath}")
+        self.status_message_changed.emit(f"Selected region exported ({summary}): {filepath}")
         return text
 
     def request_export_alignment_fasta(self) -> str | None:
@@ -905,8 +980,14 @@ class AlignmentViewer(BaseViewer):
     def close_viewer(self) -> bool:
         """Protect pending scientific edits; viewer-only Hide is not dirty."""
 
+        intent = self.prepare_close()
+        return intent is not None and self.commit_close(intent)
+
+    def prepare_close(self) -> str | None:
+        """Ask for an Alignment close intent without changing the working copy."""
+
         if not self.has_pending_scientific_changes:
-            return True
+            return "close"
         choice = QMessageBox.warning(
             self,
             "Unsaved Alignment Edits",
@@ -917,8 +998,15 @@ class AlignmentViewer(BaseViewer):
             QMessageBox.StandardButton.Cancel,
         )
         if choice == QMessageBox.StandardButton.Cancel:
-            return False
+            return None
         if choice == QMessageBox.StandardButton.Save:
+            return "save"
+        return "discard"
+
+    def commit_close(self, intent: object) -> bool:
+        """Apply an already-confirmed Alignment close intent."""
+
+        if intent == "save":
             return self.save_edited_alignment() is not None
         return True
 
@@ -927,6 +1015,11 @@ class AlignmentViewer(BaseViewer):
         summary = [
             f"Sequences: {remaining}",
             f"Alignment length: {self.current_alignment_length}",
+            (
+                "Editing working copy • Unsaved edits"
+                if self.is_dirty
+                else "Editing working copy • No unsaved edits"
+            ),
         ]
         if self._deleted_row_ids:
             count = len(self._deleted_row_ids)
@@ -941,14 +1034,34 @@ class AlignmentViewer(BaseViewer):
         if self._excluded_column_ids:
             summary.append(f"{len(self._excluded_column_ids)} excluded (retained)")
         self._summary.setText("    •    ".join(summary))
+        self._manual_edit_legend.setVisible(bool(self._edited_cells()))
+        self._save_revision_button.setEnabled(
+            self.is_dirty and self._alignment_editability_error() is None
+        )
         self._populate_table(reset_grid_selection=reset_grid_selection)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         self._summary = QLabel()
+        self._manual_edit_legend = QLabel(
+            "Blue cells are manually edited bases in this working copy."
+        )
+        self._manual_edit_legend.setToolTip(
+            "These edits are not written to the source Alignment. Save Changes as New Revision "
+            "to create a new immutable Alignment revision."
+        )
+        self._save_revision_button = QPushButton("Save Changes as New Revision")
+        self._save_revision_button.setObjectName("saveChangesAsNewRevisionButton")
+        self._save_revision_button.setToolTip(
+            "Save this working copy as a new immutable Alignment revision. "
+            "The current revision remains preserved."
+        )
+        self._save_revision_button.clicked.connect(self.save_edited_alignment)
         layout.addWidget(self._summary)
+        layout.addWidget(self._manual_edit_legend)
         self._status = QLabel("Select an alignment cell or column.")
         layout.addWidget(self._status)
+        layout.addWidget(self._save_revision_button)
         self._grid = SequenceGridWidget()
         self._grid.setObjectName("alignmentViewerSequenceGrid")
         self._grid.cell_selected.connect(self._grid_cell_selected)
@@ -963,6 +1076,16 @@ class AlignmentViewer(BaseViewer):
         self._table = self._grid
         layout.addWidget(self._grid, 1)
         self.refresh()
+
+    def show_revision_saved_feedback(self, message: str) -> None:
+        """Show Controller-confirmed immutable-revision feedback in the new editor."""
+
+        self._status.setText(str(message))
+        self._status.setToolTip(
+            "The source Alignment revision remains preserved. Use Save Project to persist "
+            "the Project and its new revision to disk."
+        )
+        self.status_message_changed.emit(str(message))
 
     def _show_grid_context_menu(self, selection: object, global_position: object) -> None:
         """Expose alignment editing where the selection is made, not in a long toolbar."""
@@ -1279,9 +1402,16 @@ class AlignmentViewerActionProvider:
                 callback=getattr(viewer, "copy_selection"),
             ),
             ViewerAction(
+                action_id="alignment.export_selected_rows_fasta",
+                label="Export Selected Rows as FASTA…",
+                tooltip="Export each selected AlignmentDataset row in full; the selected column range is ignored and alignment gaps are retained",
+                callback=getattr(viewer, "request_export_selected_rows_fasta"),
+                enabled=export_available,
+            ),
+            ViewerAction(
                 action_id="alignment.export_selection_fasta",
-                label="Export Selected Sequences as FASTA…",
-                tooltip="Export the selected rows and columns as FASTA; alignment gaps in the selected rectangle are retained",
+                label="Export Selected Region as FASTA…",
+                tooltip="Export only the selected row × column region as FASTA; alignment gaps in the selected rectangle are retained",
                 callback=getattr(viewer, "request_export_selection_fasta"),
                 enabled=export_available,
             ),
@@ -1424,8 +1554,8 @@ class AlignmentViewerActionProvider:
             ),
             ViewerAction(
                 action_id="alignment.save_edited_alignment",
-                label="Save Edited Alignment",
-                tooltip="Register edited cells as a derived AlignmentDataset in the Project",
+                label="Save Changes as New Revision",
+                tooltip="Save edits as a new immutable Alignment revision. The previous revision is preserved.",
                 callback=getattr(viewer, "save_edited_alignment"),
                 toolbar=True,
                 menu_group="Dataset",

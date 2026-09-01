@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QMenu
 
@@ -9,6 +11,27 @@ from app.app_state import AppState
 from app.gui_thread import assert_main_gui_thread
 from app.icon_registry import studio_icon
 from widgets.workspace_tabs import WorkspaceTabs
+
+
+@dataclass
+class ViewerClosePlan:
+    """One viewer's non-destructive close decision."""
+
+    viewer_id: str
+    intent: object
+
+
+@dataclass
+class CloseAllPlan:
+    """A complete close transaction prepared without closing any tab."""
+
+    viewers: tuple[ViewerClosePlan, ...]
+    drain_remaining: bool = True
+    committed: bool = False
+
+    @property
+    def requires_project_persistence(self) -> bool:
+        return any(plan.intent == "save" for plan in self.viewers)
 
 
 class TabManager(QObject):
@@ -69,8 +92,17 @@ class TabManager(QObject):
         viewer = self._viewers.get(viewer_id)
         if viewer is None:
             return False
-        close_viewer = getattr(viewer, "close_viewer", None)
-        if callable(close_viewer) and not close_viewer():
+        intent = self._prepare_viewer_close(viewer)
+        if intent is None or not self._commit_viewer_close(viewer, intent):
+            return False
+        return self._remove_viewer(viewer_id)
+
+    def _remove_viewer(self, viewer_id: str) -> bool:
+        """Detach a viewer after its close intent has already committed."""
+
+        assert_main_gui_thread("TabManager._remove_viewer/QTabWidget.removeTab")
+        viewer = self._viewers.get(viewer_id)
+        if viewer is None:
             return False
 
         self._disconnect_viewer_signals(viewer)
@@ -104,14 +136,96 @@ class TabManager(QObject):
         self._state.viewer_closed.emit(viewer_id)
         return True
 
-    def close_others(self, viewer_id: str) -> None:
-        for existing_viewer_id in tuple(self._viewers):
-            if existing_viewer_id != viewer_id:
-                self.close_viewer(existing_viewer_id)
+    def close_others(self, viewer_id: str) -> bool:
+        plan = self.prepare_close_all(exclude_viewer_ids={viewer_id})
+        if plan is None:
+            return False
+        if not self.commit_close_changes(plan):
+            return False
+        return self.finalize_close_all(plan)
 
-    def close_all(self) -> None:
-        for viewer_id in tuple(self._viewers):
-            self.close_viewer(viewer_id)
+    def close_all(self) -> bool:
+        """Close every viewer as one all-or-nothing transaction."""
+
+        plan = self.prepare_close_all()
+        if plan is None:
+            return False
+        if not self.commit_close_changes(plan):
+            return False
+        return self.finalize_close_all(plan)
+
+    def prepare_close_all(
+        self,
+        *,
+        exclude_viewer_ids: set[str] | None = None,
+    ) -> CloseAllPlan | None:
+        """Collect every close decision without saving, discarding, or closing.
+
+        Returning ``None`` means a viewer selected Cancel.  No viewer state or
+        tab ownership has changed in that case.
+        """
+
+        excluded = exclude_viewer_ids or set()
+        plans: list[ViewerClosePlan] = []
+        for viewer_id, viewer in tuple(self._viewers.items()):
+            if viewer_id in excluded:
+                continue
+            intent = self._prepare_viewer_close(viewer)
+            if intent is None:
+                return None
+            plans.append(ViewerClosePlan(viewer_id, intent))
+        return CloseAllPlan(tuple(plans), drain_remaining=not excluded)
+
+    def commit_close_changes(self, plan: CloseAllPlan) -> bool:
+        """Save accepted editor intents but keep every tab open.
+
+        This is deliberately separate from :meth:`finalize_close_all` so a
+        Project-level bundle save can still fail without losing visible tabs.
+        """
+
+        if plan.committed:
+            return True
+        for entry in plan.viewers:
+            viewer = self._viewers.get(entry.viewer_id)
+            if viewer is None or not self._commit_viewer_close(viewer, entry.intent):
+                return False
+        plan.committed = True
+        return True
+
+    def finalize_close_all(self, plan: CloseAllPlan) -> bool:
+        """Remove tabs only after all accepted close changes have committed."""
+
+        if not plan.committed:
+            return False
+        for entry in plan.viewers:
+            if entry.viewer_id in self._viewers and not self._remove_viewer(entry.viewer_id):
+                return False
+
+        # Saving an Editor can open a clean immutable-revision replacement.
+        # It was created by this already-accepted transaction, so close it too
+        # without another prompt.  A dirty unexpected viewer is never removed.
+        while plan.drain_remaining and self._viewers:
+            viewer_id, viewer = next(iter(self._viewers.items()))
+            if bool(getattr(viewer, "is_dirty", False)):
+                return False
+            if not self._remove_viewer(viewer_id):
+                return False
+        return True
+
+    @staticmethod
+    def _prepare_viewer_close(viewer: object) -> object | None:
+        prepare_close = getattr(viewer, "prepare_close", None)
+        if callable(prepare_close):
+            return prepare_close()
+        return "close"
+
+    @staticmethod
+    def _commit_viewer_close(viewer: object, intent: object) -> bool:
+        commit_close = getattr(viewer, "commit_close", None)
+        if callable(commit_close):
+            return bool(commit_close(intent))
+        close_viewer = getattr(viewer, "close_viewer", None)
+        return not callable(close_viewer) or bool(close_viewer())
 
     def active_viewer(self) -> object | None:
         widget = self._tabs.currentWidget()

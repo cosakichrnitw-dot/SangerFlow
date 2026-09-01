@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QEvent, QPointF, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QLineEdit, QMenu
+from widgets.base_palette import base_identity_colors
 from widgets.font_utils import fixed_width_font
 
 
@@ -37,10 +38,7 @@ class SequenceGridPalette:
 
 DEFAULT_SEQUENCE_GRID_PALETTE = SequenceGridPalette(
     base_backgrounds={
-        "A": QColor("#E06666"),
-        "C": QColor("#7BC67B"),
-        "G": QColor("#F6E15A"),
-        "T": QColor("#6FA8DC"),
+        **base_identity_colors(),
         "N": QColor("#B7B7B7"),
         "-": QColor("#D9D9D9"),
     }

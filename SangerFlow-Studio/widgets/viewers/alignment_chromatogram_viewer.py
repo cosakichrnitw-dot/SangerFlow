@@ -27,6 +27,7 @@ from core.alignment_mapper import alignment_to_trace_positions, trace_to_alignme
 from core.chromatogram_alignment import align_reads
 from core.consensus import build_quality_consensus
 from core.models import SangerRead
+from widgets.base_palette import BASE_IDENTITY_COLORS, base_identity_color
 from widgets.font_utils import fixed_width_font
 from widgets.viewers.base_viewer import BaseViewer
 from widgets.viewers.alignment_trace_geometry import (
@@ -48,18 +49,8 @@ BASE_Y_OFFSET = -18
 ALIGNMENT_TRACE_GAIN = 0.022
 RULER_Y = 18
 
-_TRACE_COLORS = {
-    "A": QColor("green"),
-    "T": QColor("red"),
-    "G": QColor("black"),
-    "C": QColor("blue"),
-}
-_BASE_COLORS = {
-    "A": QColor("green"),
-    "T": QColor("red"),
-    "G": QColor("black"),
-    "C": QColor("blue"),
-}
+_TRACE_COLORS = BASE_IDENTITY_COLORS
+_BASE_COLORS = BASE_IDENTITY_COLORS
 
 
 class AlignmentChromatogramViewer(BaseViewer):
@@ -1076,7 +1067,7 @@ def _alignment_column_x(alignment_column: int) -> int:
 
 
 def _base_color(base: str) -> QColor:
-    return _BASE_COLORS.get(base.upper(), QColor("gray"))
+    return _BASE_COLORS.get(base.upper(), base_identity_color(base, fallback="#808080"))
 
 
 def _safe_identifier(value: str | None) -> str:

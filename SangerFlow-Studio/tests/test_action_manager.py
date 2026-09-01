@@ -16,7 +16,7 @@ sys.path.insert(0, str(repository_root))
 
 from app.action_manager import ActionManager, _toolbar_icon
 from app.app_state import AppState
-from app.icon_registry import action_icon
+from app.icon_registry import action_icon, studio_icon
 from PySide6.QtWidgets import QApplication, QToolBar
 from widgets.viewers import BaseViewer
 from widgets.viewers.viewer_actions import ViewerAction
@@ -172,6 +172,35 @@ class ActionManagerTests(unittest.TestCase):
         self.assertFalse(action_icon("dataset.import_sample_metadata").isNull())
         self.assertFalse(action_icon("alignment.delete_selected_rows").isNull())
         self.assertTrue(action_icon("viewer.unknown_action").isNull())
+
+    def test_designer_png_icons_resolve_for_their_existing_actions(self) -> None:
+        icon_directory = Path(__file__).resolve().parents[1] / "resources" / "icons"
+        expected_pngs = {
+            "align.png",
+            "blast.png",
+            "chromatogram.png",
+            "consensus.png",
+            "open_source_sequence_editor.png",
+            "quality_report.png",
+            "sequence_editor.png",
+            "show_trim_region.png",
+        }
+        self.assertTrue(all((icon_directory / name).is_file() for name in expected_pngs))
+        for action_id in (
+            "dataset.align_sequences",
+            "chromatogram.align",
+            "dataset.run_blast",
+            "dataset.open_chromatogram_viewer",
+            "chromatogram.build_consensus",
+            "sequence_editor.review_evidence",
+            "dataset.open_quality_report",
+            "dataset.edit_sequences",
+            "chromatogram.toggle_trim_region",
+            "alignment_chromatogram.toggle_trim_region",
+            "alignment_chromatogram.open_quality_report",
+        ):
+            self.assertFalse(action_icon(action_id).isNull(), action_id)
+        self.assertFalse(studio_icon("open_source_sequence_editor").isNull())
 
     def test_alignment_edit_actions_are_classified_under_edit_not_align(self) -> None:
         self.assertEqual(ActionManager._default_menu_group("alignment.set_selection_a"), "Edit")

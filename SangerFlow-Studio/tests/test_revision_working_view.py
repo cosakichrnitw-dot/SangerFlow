@@ -16,7 +16,7 @@ sys.path[:0] = (str(studio_root), str(studio_root.parent))
 from app.qt_runtime import configure_qt_plugins
 configure_qt_plugins()
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.app_state import AppState
 from controllers.project_controller import ProjectController
@@ -254,6 +254,109 @@ class RevisionWorkingViewTests(unittest.TestCase):
             root = self.explorer.topLevelItem(0)
             self.assertEqual(root.child(0).childCount(), 0)
             self.assertEqual(root.child(4).childCount(), 1)
+        finally:
+            graph.close()
+
+    def test_graph_restore_uses_current_entry_logical_id_not_dataset_or_display_id(self) -> None:
+        """A graph node's revision ID must resolve to its canonical logical family."""
+
+        archived = self.state.current_project.archive_logical_dataset("coi_r1")
+        self.state.replace_project(archived)
+        graph = ProjectSummaryGraph(self.state, self.controller)
+        try:
+            entry = self.state.current_project.get_entry("coi_r3")
+            self.assertEqual(entry.display_name, "Wedgefish COI")
+            self.assertEqual(entry.dataset.dataset_id, "coi_r3")
+            self.assertEqual(entry.logical_id, "coi_r1")
+
+            graph._restore_dataset_entry(entry)
+
+            restored = self.state.current_project.current_dataset_entry("coi_r1")
+            self.assertEqual(restored.dataset.dataset_id, "coi_r3")
+            self.assertEqual(restored.logical_id, "coi_r1")
+        finally:
+            graph.close()
+
+    def test_graph_restores_archived_derived_dataset(self) -> None:
+        derived = _dataset("0713_selection", (("Derived", "ATGC", {}),))
+        project = self.state.current_project.add_dataset(derived, display_name="0713 selection")
+        self.state.replace_project(project.archive_logical_dataset("0713_selection"))
+        graph = ProjectSummaryGraph(self.state, self.controller)
+        try:
+            entry = self.state.current_project.get_entry("0713_selection")
+            graph._restore_dataset_entry(entry)
+            self.assertEqual(
+                self.state.current_project.current_dataset_entry("0713_selection").dataset.dataset_id,
+                "0713_selection",
+            )
+        finally:
+            graph.close()
+
+    def test_graph_restore_after_save_reload_preserves_canonical_logical_id(self) -> None:
+        archived = self.state.current_project.archive_logical_dataset("coi_r1")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "project.json"
+            save_project(archived, path)
+            reloaded = load_project(path)
+        self.state.replace_project(reloaded)
+        graph = ProjectSummaryGraph(self.state, self.controller)
+        try:
+            graph._restore_dataset_entry(self.state.current_project.get_entry("coi_r3"))
+            restored = self.state.current_project.current_dataset_entry("coi_r1")
+            self.assertEqual(restored.dataset.dataset_id, "coi_r3")
+            self.assertEqual(restored.logical_id, "coi_r1")
+        finally:
+            graph.close()
+
+    def test_graph_delete_cancel_leaves_leaf_dataset_unchanged(self) -> None:
+        leaf = _dataset("leaf", (("L1", "ATGC", {}),))
+        state = AppState()
+        controller = ProjectController(state)
+        controller.open_project(Project.create("leaf-project", "Leaf").add_dataset(leaf))
+        graph = ProjectSummaryGraph(state, controller)
+        try:
+            entry = state.current_project.get_entry("leaf")
+            with patch(
+                "widgets.project_summary_graph.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Cancel,
+            ) as question:
+                graph._delete_dataset_entry(entry)
+            self.assertTrue(state.current_project.has_dataset("leaf"))
+            buttons = question.call_args.args[3]
+            self.assertEqual(
+                buttons,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+        finally:
+            graph.close()
+
+    def test_graph_delete_confirm_removes_safe_leaf_dataset(self) -> None:
+        leaf = _dataset("leaf", (("L1", "ATGC", {}),))
+        state = AppState()
+        controller = ProjectController(state)
+        controller.open_project(Project.create("leaf-project", "Leaf").add_dataset(leaf))
+        graph = ProjectSummaryGraph(state, controller)
+        try:
+            with patch(
+                "widgets.project_summary_graph.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                graph._delete_dataset_entry(state.current_project.get_entry("leaf"))
+            self.assertFalse(state.current_project.has_dataset("leaf"))
+        finally:
+            graph.close()
+
+    def test_graph_stale_dataset_entry_is_a_safe_no_op(self) -> None:
+        stale = self.state.current_project.get_entry("coi_r3")
+        self.state.replace_project(Project.create("replacement", "Replacement"))
+        graph = ProjectSummaryGraph(self.state, self.controller)
+        try:
+            with patch("widgets.project_summary_graph.QMessageBox.question") as question:
+                graph._archive_dataset_entry(stale)
+                graph._restore_dataset_entry(stale)
+                graph._delete_dataset_entry(stale)
+            self.assertEqual(self.state.current_project.dataset_count, 0)
+            question.assert_not_called()
         finally:
             graph.close()
 

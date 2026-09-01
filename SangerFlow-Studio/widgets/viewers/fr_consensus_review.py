@@ -63,6 +63,10 @@ from widgets.viewers.single_consensus_view_model import (
     SingleConsensusViewModel,
     build_single_consensus_view_model,
 )
+from widgets.viewers.consensus_decision_presentation import (
+    decision_reason_label,
+    decision_source_label,
+)
 from widgets.viewers.base_viewer import BaseViewer
 from widgets.viewers.viewer_actions import ViewerAction
 
@@ -997,6 +1001,14 @@ class SingleConsensusReviewViewer(BaseViewer):
         return dict(self._settings_metadata)
 
     @property
+    def has_pending_scientific_changes(self) -> bool:
+        return bool(self._undo_stack)
+
+    @property
+    def is_dirty(self) -> bool:
+        return self.has_pending_scientific_changes
+
+    @property
     def action_providers(self) -> tuple[object, ...]:
         return (self._action_provider,)
 
@@ -1197,6 +1209,33 @@ class SingleConsensusReviewViewer(BaseViewer):
         self.status_message_changed.emit(f"Reviewed Consensus Dataset created: {dataset.dataset_id}")
         return dataset
 
+    def close_viewer(self) -> bool:
+        intent = self.prepare_close()
+        return intent is not None and self.commit_close(intent)
+
+    def prepare_close(self) -> str | None:
+        """Collect a single F/R review close choice without changing it."""
+
+        if not self.has_pending_scientific_changes:
+            return "close"
+        choice = QMessageBox.warning(
+            self,
+            "Unsaved Consensus Review Edits",
+            "This review has pending scientific edits.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if choice == QMessageBox.StandardButton.Cancel:
+            return None
+        return "save" if choice == QMessageBox.StandardButton.Save else "discard"
+
+    def commit_close(self, intent: object) -> bool:
+        if intent == "save":
+            return self.create_and_register_reviewed_dataset() is not None
+        return True
+
     def jump_to_forward_trace(self) -> bool:
         return self._emit_trace_jump(self.selected_evidence.forward_jump_target, "Forward")
 
@@ -1379,12 +1418,16 @@ class SingleConsensusReviewViewer(BaseViewer):
     def _update_detail(self) -> None:
         column = self._view_model.columns[self._selected_position]
         evidence = column.review_evidence
+        reviewed_base = self._reviewed_bases[self._selected_position]
+        automatic_base = evidence.consensus_base
+        review_state = "Manual change" if reviewed_base != automatic_base else "Not changed"
         self._detail_label.setText(
             "Selected consensus position: "
-            f"{self._selected_position + 1}    "
-            f"Original: {self.original_consensus[self._selected_position]}    "
-            f"Reviewed: {self._reviewed_bases[self._selected_position]}\n"
-            f"Decision: {evidence.decision_reason}    Source: {column.selected_source}\n"
+            f"{self._selected_position + 1}\n"
+            f"Automatic decision: {automatic_base}    "
+            f"Evidence source: {decision_source_label(column.selected_source)}\n"
+            f"Automatic reason: {decision_reason_label(getattr(evidence, 'decision_reason', None))}\n"
+            f"Reviewed base: {reviewed_base} ({review_state})\n"
             "Forward evidence: "
             f"base={_format_optional(evidence.forward_base)} "
             f"Q={_format_quality(evidence.forward_quality)} "
@@ -1893,8 +1936,14 @@ class MultipleConsensusReviewViewer(BaseViewer):
     def close_viewer(self) -> bool:
         """Never lose pending reviewed-consensus or staged-row edits silently."""
 
+        intent = self.prepare_close()
+        return intent is not None and self.commit_close(intent)
+
+    def prepare_close(self) -> str | None:
+        """Ask for a review-close intent without changing review state."""
+
         if not self.has_pending_scientific_changes:
-            return True
+            return "close"
         choice = QMessageBox.warning(
             self,
             "Unsaved Consensus Review Edits",
@@ -1905,8 +1954,15 @@ class MultipleConsensusReviewViewer(BaseViewer):
             QMessageBox.StandardButton.Cancel,
         )
         if choice == QMessageBox.StandardButton.Cancel:
-            return False
+            return None
         if choice == QMessageBox.StandardButton.Save:
+            return "save"
+        return "discard"
+
+    def commit_close(self, intent: object) -> bool:
+        """Apply an already-confirmed review close intent."""
+
+        if intent == "save":
             return self.create_and_register_reviewed_dataset() is not None
         return True
 
@@ -1915,7 +1971,12 @@ class MultipleConsensusReviewViewer(BaseViewer):
         self._summary_label = QLabel()
         layout.addWidget(self._summary_label)
         sample_controls = QHBoxLayout()
-        sample_controls.addWidget(QLabel("Review samples:"))
+        alignment_samples_label = QLabel("Samples for temporary alignment:")
+        alignment_samples_label.setToolTip(
+            "Choose which reviewed samples are included in the temporary alignment preview. "
+            "This does not change review status or reviewed-dataset output."
+        )
+        sample_controls.addWidget(alignment_samples_label)
         for row in self._rows:
             checkbox = QCheckBox(row.sample_id)
             checkbox.setChecked(True)
@@ -2198,19 +2259,21 @@ class MultipleConsensusReviewViewer(BaseViewer):
                     "Consensus position: —    Forward trace: —    Reverse trace: —    Base: GAP"
                 )
                 return
-        original = self._original_sequence(self._selected_sample_id)
         reviewed = self._reviewed_sequences[self._selected_sample_id]
         base = reviewed[self._selected_position]
-        original_base = original[self._selected_position]
-        evidence = self._row_for_sample(self._selected_sample_id).view_model.columns[self._selected_position].review_evidence
+        column = self._row_for_sample(self._selected_sample_id).view_model.columns[self._selected_position]
+        evidence = column.review_evidence
+        review_state = "Manual change" if base != evidence.consensus_base else "Not changed"
         self._detail_label.setText(
             f"Selected sample: {self._selected_sample_id}    "
             f"Alignment column: {(self._selected_mafft_column + 1) if self._selected_mafft_column is not None else self._selected_position + 1}    "
-            f"Consensus position: {self._selected_position + 1}    "
-            f"Original: {original_base}    Reviewed: {base}    "
-            f"Forward: {_format_optional(evidence.forward_base)} / Q{_format_quality(evidence.forward_quality)}    "
-            f"Reverse: {_format_optional(evidence.reverse_base)} / Q{_format_quality(evidence.reverse_quality)}    "
-            f"Changed: {'Yes' if base != original_base else 'No'}"
+            f"Consensus position: {self._selected_position + 1}\n"
+            f"Automatic decision: {evidence.consensus_base}    "
+            f"Evidence source: {decision_source_label(column.selected_source)}\n"
+            f"Automatic reason: {decision_reason_label(getattr(evidence, 'decision_reason', None))}\n"
+            f"Reviewed base: {base} ({review_state})\n"
+            f"Forward evidence: {_format_optional(evidence.forward_base)}, Q{_format_quality(evidence.forward_quality)}    "
+            f"Reverse evidence: {_format_optional(evidence.reverse_base)}, Q{_format_quality(evidence.reverse_quality)}"
         )
 
     def _move_variable_site(self, direction: int) -> bool:

@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -16,7 +17,7 @@ sys.path.insert(0, str(repository_root))
 
 from app.qt_runtime import configure_qt_plugins
 configure_qt_plugins()
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.app_state import AppState
 from controllers.project_controller import ProjectController, _gapless_mafft_input
@@ -99,6 +100,62 @@ class SequenceEditorTests(unittest.TestCase):
         self.assertEqual(project.get_entry("coi").revision_state, RevisionState.SUPERSEDED)
         self.assertEqual(project.get_entry(derived.dataset_id).revision_state, RevisionState.CURRENT)
         self.assertEqual(project.get_entry(derived.dataset_id).logical_id, "coi")
+
+    def test_editor_working_copy_feedback_tracks_dirty_undo_and_saved_revision(self) -> None:
+        dataset = _dataset()
+        editor = SequenceEditor(dataset)
+
+        self.assertIn("Editing working copy • No unsaved edits", editor._summary.text())
+        self.assertFalse(editor._save_revision_button.isEnabled())
+        self.assertTrue(editor._manual_edit_legend.isHidden())
+        self.assertTrue(editor.set_base("C1", 0, "G"))
+        self.assertIn("Editing working copy • Unsaved edits", editor._summary.text())
+        self.assertTrue(editor._save_revision_button.isEnabled())
+        self.assertFalse(editor._manual_edit_legend.isHidden())
+        self.assertTrue(editor.undo())
+        self.assertIn("Editing working copy • No unsaved edits", editor._summary.text())
+        self.assertFalse(editor._save_revision_button.isEnabled())
+        self.assertTrue(editor._manual_edit_legend.isHidden())
+
+        state = AppState()
+        controller = ProjectController(state)
+        view = ProjectView(state, controller)
+        controller.open_project(Project.create("project", "Project").add_dataset(dataset))
+        editor = SequenceEditor(dataset, context=view.viewer_context)
+        self.assertTrue(editor.set_base("C1", 0, "G"))
+        editor._save_revision_button.click()
+
+        self.assertIsInstance(state.active_viewer, SequenceEditor)
+        self.assertIn("Saved as COI revision 2. Previous revision preserved.", state.active_viewer._status.text())
+        self.assertIn("Editing working copy • No unsaved edits", state.active_viewer._summary.text())
+        self.assertEqual(state.current_project.get_entry("coi").revision_state, RevisionState.SUPERSEDED)
+        view.close()
+
+    def test_unsaved_sequence_editor_close_requires_explicit_save_discard_or_cancel(self) -> None:
+        editor = SequenceEditor(_dataset())
+        self.assertTrue(editor.set_base("C1", 0, "G"))
+
+        with patch(
+            "widgets.viewers.sequence_editor.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Cancel,
+        ):
+            self.assertFalse(editor.close_viewer())
+        self.assertTrue(editor.is_dirty)
+        self.assertEqual(editor.document.sequence("C1"), "GTGC")
+
+        with patch(
+            "widgets.viewers.sequence_editor.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Discard,
+        ):
+            self.assertTrue(editor.close_viewer())
+        self.assertTrue(editor.is_dirty)
+
+        editor.save_edited_revision = lambda: object()  # type: ignore[method-assign]
+        with patch(
+            "widgets.viewers.sequence_editor.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Save,
+        ):
+            self.assertTrue(editor.close_viewer())
 
     def test_stale_and_archived_revisions_are_not_editable(self) -> None:
         dataset = _dataset()

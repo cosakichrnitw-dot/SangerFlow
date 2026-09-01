@@ -269,31 +269,45 @@ class ProjectSummaryGraph(QGraphicsView):
 
     def _archive_dataset_entry(self, entry: object) -> None:
         method = getattr(self._controller, "archive_logical_dataset", None)
-        logical_id = getattr(entry, "logical_id", None)
-        if not callable(method) or not logical_id:
+        current_entry = self._current_project_entry(entry)
+        logical_id = getattr(current_entry, "logical_id", None)
+        if (
+            not callable(method)
+            or not logical_id
+            or getattr(current_entry, "revision_state", None) is not RevisionState.CURRENT
+        ):
             return
         try:
             method(logical_id)
-        except ValueError as error:
+        except (KeyError, ValueError) as error:
             QMessageBox.warning(self, "Archive Dataset", str(error))
 
     def _restore_dataset_entry(self, entry: object) -> None:
         method = getattr(self._controller, "restore_logical_dataset", None)
-        logical_id = getattr(entry, "logical_id", None)
-        if not callable(method) or not logical_id:
+        current_entry = self._current_project_entry(entry)
+        logical_id = getattr(current_entry, "logical_id", None)
+        if (
+            not callable(method)
+            or not logical_id
+            or getattr(current_entry, "revision_state", None) is not RevisionState.ARCHIVED
+        ):
             return
         try:
             method(logical_id)
-        except ValueError as error:
+        except (KeyError, ValueError) as error:
             QMessageBox.warning(self, "Restore Dataset", str(error))
 
     def _delete_dataset_entry(self, entry: object) -> None:
-        dataset_id = _dataset_id(getattr(entry, "dataset", None))
+        current_entry = self._current_project_entry(entry)
+        dataset_id = _dataset_id(getattr(current_entry, "dataset", None))
         if not dataset_id:
             return
-        name = str(getattr(entry, "display_name", dataset_id))
+        name = str(getattr(current_entry, "display_name", dataset_id))
         dependencies_method = getattr(self._controller, "dataset_delete_dependencies", None)
-        dependencies = tuple(dependencies_method(dataset_id)) if callable(dependencies_method) else ()
+        try:
+            dependencies = tuple(dependencies_method(dataset_id)) if callable(dependencies_method) else ()
+        except (KeyError, ValueError):
+            return
         if dependencies:
             QMessageBox.information(
                 self,
@@ -306,18 +320,39 @@ class ProjectSummaryGraph(QGraphicsView):
             self,
             "Delete from Project",
             f"Delete “{name}” from this Project? This only succeeds for a safe leaf Dataset.",
-            QMessageBox.StandardButton.Delete | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if response is not QMessageBox.StandardButton.Delete:
+        if response != QMessageBox.StandardButton.Yes:
             return
         method = getattr(self._controller, "remove_dataset", None)
         if not callable(method):
             return
         try:
             method(dataset_id)
-        except ValueError as error:
+        except (KeyError, ValueError) as error:
             QMessageBox.warning(self, f"Cannot delete “{name}”.", str(error))
+
+    def _current_project_entry(self, entry: object) -> object | None:
+        """Resolve a graph node's immutable revision in the current Project.
+
+        Scene nodes retain the entry that existed when the graph was painted.
+        Project changes are refreshed asynchronously, so a user can still
+        trigger a context action against a stale node.  The immutable dataset
+        ID identifies that revision; logical_id is then read from the current
+        Project entry for Archive and Restore. Display labels are
+        presentation-only and never participate in lifecycle operations.
+        """
+
+        dataset_id = _dataset_id(getattr(entry, "dataset", None))
+        project = self._state.current_project
+        getter = getattr(project, "get_entry", None)
+        if not dataset_id or not callable(getter):
+            return None
+        try:
+            return getter(dataset_id)
+        except KeyError:
+            return None
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._interaction_start = self._view_state()

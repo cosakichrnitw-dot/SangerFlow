@@ -1,4 +1,4 @@
-"""Central, replaceable SVG icon resolution for Studio presentation actions."""
+"""Central, replaceable icon resolution for Studio presentation actions."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from core.resource_paths import application_resource_path
 _ACTION_ICON_NAMES: dict[str, str] = {
     "dataset.open_chromatogram_viewer": "chromatogram",
     "dataset.edit_sequences": "sequence_editor",
+    "dataset.align_sequences": "align",
     "dataset.open_alignment_viewer": "sequence_editor",
     "dataset.import_sample_metadata": "metadata",
     "dataset.create_metadata_template": "metadata",
@@ -22,13 +23,13 @@ _ACTION_ICON_NAMES: dict[str, str] = {
     "dataset.batch_rename_records": "rename",
     "dataset.run_blast": "blast",
     "dataset.import_blast_xml": "import",
-    "dataset.open_quality_report": "quality",
-    "chromatogram.toggle_trim_region": "visibility",
+    "dataset.open_quality_report": "quality_report",
+    "chromatogram.toggle_trim_region": "show_trim_region",
     "chromatogram.open_sequence_editor": "sequence_editor",
     "chromatogram.build_consensus": "consensus",
-    "chromatogram.open_quality_report": "quality",
+    "chromatogram.open_quality_report": "quality_report",
     "chromatogram.align": "align",
-    "alignment.review_chromatograms": "evidence",
+    "alignment.review_chromatograms": "chromatogram",
     "alignment.run_blast": "blast",
     "alignment.export_selection_fasta": "export",
     "alignment.exclude_columns": "hide",
@@ -46,7 +47,7 @@ _ACTION_ICON_NAMES: dict[str, str] = {
     "sequence_editor.hide_rows": "hide",
     "sequence_editor.show_all_rows": "show",
     "sequence_editor.delete_rows": "delete",
-    "sequence_editor.review_evidence": "evidence",
+    "sequence_editor.review_evidence": "open_source_sequence_editor",
     "sequence_editor.align": "align",
     "identification.apply_filter": "filter",
     "identification.clear_filter": "clear",
@@ -66,13 +67,27 @@ _ACTION_ICON_NAMES: dict[str, str] = {
     "multiple_consensus.previous_conflict": "previous",
     "multiple_consensus.next_conflict": "next",
     "multiple_consensus.create_dataset": "create_dataset",
+    "alignment_chromatogram.toggle_trim_region": "show_trim_region",
+    "alignment_chromatogram.open_quality_report": "quality_report",
 }
 
 
 def studio_icon(name: str, *, fallback_size: int = 32) -> QIcon:
-    """Load a replaceable SVG without relying on Studio's working directory."""
+    """Load a replaceable PNG or SVG without relying on Studio's working directory.
 
-    path = application_resource_path("SangerFlow-Studio", "resources", "icons", f"{name}.svg")
+    Designer-provided PNG assets are preferred when present. Existing SVGs
+    remain the fallback for all other presentation actions and for a missing
+    PNG asset. QIcon performs normal platform/high-DPI scaling.
+    """
+
+    resources = application_resource_path("SangerFlow-Studio", "resources", "icons")
+    png_path = resources / f"{name}.png"
+    if png_path.is_file():
+        icon = QIcon(str(png_path))
+        if not icon.isNull():
+            return icon
+
+    path = resources / f"{name}.svg"
     if not path.is_file():
         return QIcon()
     icon = QIcon(str(path))

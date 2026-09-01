@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from typing import Iterable
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QStaticText, QTransform
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap, QStaticText, QTransform
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from app.selection import SelectionKind, StudioSelection
 from app.icon_registry import studio_icon
 from core.models import SangerRead
+from widgets.base_palette import BASE_IDENTITY_COLORS, base_identity_color
 from widgets.font_utils import fixed_width_font
 from widgets.viewers.base_viewer import BaseViewer
 from widgets.viewers.viewer_actions import ViewerAction
@@ -58,18 +59,8 @@ X_SCALE_MAX = 2000
 Y_SCALE_MIN = 50
 Y_SCALE_MAX = 300
 
-_TRACE_COLORS = {
-    "A": QColor("#2CA02C"),
-    "C": QColor("#1F77B4"),
-    "G": QColor("#222222"),
-    "T": QColor("#D62728"),
-}
-_BASE_COLORS = {
-    "A": QColor("green"),
-    "C": QColor("blue"),
-    "G": QColor("black"),
-    "T": QColor("red"),
-}
+_TRACE_COLORS = BASE_IDENTITY_COLORS
+_BASE_COLORS = BASE_IDENTITY_COLORS
 
 
 @dataclass(frozen=True)
@@ -432,9 +423,8 @@ class ChromatogramViewer(BaseViewer):
 
     def select_base_at(self, content_x: float, content_y: float) -> SelectedBaseInfo | None:
         visible_reads = self.visible_read_views
-        row_height = self._row_height()
-        row_index = int(content_y // row_height)
-        if row_index < 0 or row_index >= len(visible_reads):
+        row_index = self._row_index_at(content_y)
+        if row_index is None or row_index >= len(visible_reads):
             return None
         read_view = visible_reads[row_index]
         if not read_view.base_positions:
@@ -745,10 +735,32 @@ class ChromatogramViewer(BaseViewer):
         return max(1, int(max(max_trace, max_position) * self._scale_x) + 80)
 
     def _content_height(self) -> int:
-        return len(self.visible_read_views) * self._row_height()
+        visible_count = len(self.visible_read_views)
+        if not visible_count:
+            return 0
+        return int(self._row_geometry(visible_count - 1).bottom())
 
     def _row_height(self) -> int:
         return max(40, int(ROW_HEIGHT * self._scale_y))
+
+    def _row_geometry(self, row_index: int) -> QRectF:
+        """Return the single content-space geometry for a visible read row.
+
+        The graphics scene, fixed read-label column, hit testing, and vertical
+        centering all consume this geometry.  Keeping it here prevents a short
+        scene from visually drifting away from the label layer when its viewport
+        has spare vertical space.
+        """
+
+        row_height = self._row_height()
+        return QRectF(0, row_index * row_height, self._content_width(), row_height)
+
+    def _row_index_at(self, content_y: float) -> int | None:
+        for row_index in range(len(self.visible_read_views)):
+            geometry = self._row_geometry(row_index)
+            if geometry.top() <= content_y < geometry.bottom():
+                return row_index
+        return None
 
     def _clamp_x_scale(self, value: float) -> float:
         return min(X_SCALE_MAX / 100, max(X_SCALE_MIN / 100, float(value)))
@@ -782,7 +794,7 @@ class ChromatogramViewer(BaseViewer):
         except StopIteration:
             row_index = 0
         x_center = int(raw_trace_position * self._scale_x)
-        y_center = int(row_index * self._row_height() + self._row_height() / 2)
+        y_center = int(self._row_geometry(row_index).center().y())
         self._horizontal_scrollbar.setValue(
             max(0, x_center - self._canvas_widget.viewport().width() // 2)
         )
@@ -1014,20 +1026,29 @@ class ReadLabelColumnWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#FFFFFF"))
-        painter.setFont(fixed_width_font(9, QFont.Weight.Bold))
+        font = fixed_width_font(9, QFont.Weight.Bold)
+        painter.setFont(font)
         painter.setPen(QPen(QColor("#333333")))
-        row_height = self._viewer._row_height()
         y_offset = self._viewer._y_offset
+        metrics = QFontMetricsF(font)
         for row_index, read_view in enumerate(self._viewer.visible_read_views):
-            y = row_index * row_height - y_offset + SEQUENCE_Y * self._viewer.scale_y
-            if y > event.rect().bottom() + 20:
+            row_center = self._row_center_y(row_index)
+            y = _centered_text_baseline(row_center - y_offset, metrics)
+            text_top = y - metrics.ascent()
+            text_bottom = y + metrics.descent()
+            if text_top > event.rect().bottom():
                 break
-            if y < event.rect().top() - 30:
+            if text_bottom < event.rect().top():
                 continue
             painter.drawText(QPointF(5, y), _elide(read_view.read_id, 18))
         painter.setPen(QPen(QColor("#D8D8D8")))
         painter.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
         painter.end()
+
+    def _row_center_y(self, row_index: int) -> float:
+        """Content-space row center shared with the corresponding scene item."""
+
+        return self._viewer._row_geometry(row_index).center().y()
 
 
 class ChromatogramCanvasWidget(QGraphicsView):
@@ -1050,6 +1071,7 @@ class ChromatogramCanvasWidget(QGraphicsView):
         self._pan_y_offset = 0
         self.setMinimumSize(400, 220)
         self.setMouseTracking(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1083,13 +1105,12 @@ class ChromatogramCanvasWidget(QGraphicsView):
         content_width = self._viewer._content_width()
         content_height = self._viewer._content_height()
         self._scene.setSceneRect(0, 0, content_width, content_height)
-        row_height = self._viewer._row_height()
         device_pixel_ratio = self.viewport().devicePixelRatioF()
         for row_index, read_view in enumerate(self._viewer.visible_read_views):
+            row_geometry = self._viewer._row_geometry(row_index)
             row_item = ChromatogramReadGraphicsItem(
                 read_view,
-                row_index=row_index,
-                row_height=row_height,
+                row_geometry=row_geometry,
                 content_width=content_width,
                 scale_x=self._viewer.scale_x,
                 scale_y=self._viewer.scale_y,
@@ -1474,8 +1495,7 @@ class ChromatogramReadGraphicsItem(QGraphicsItem):
         self,
         read_view: ChromatogramReadView,
         *,
-        row_index: int,
-        row_height: int,
+        row_geometry: QRectF,
         content_width: int,
         scale_x: float,
         scale_y: float,
@@ -1488,7 +1508,7 @@ class ChromatogramReadGraphicsItem(QGraphicsItem):
         super().__init__()
         self.read_id = read_view.read_id
         self._read_view = read_view
-        self._row_height = row_height
+        self._row_height = max(1, int(row_geometry.height()))
         self._content_width = content_width
         self._scale_x = scale_x
         self._scale_y = scale_y
@@ -1498,7 +1518,7 @@ class ChromatogramReadGraphicsItem(QGraphicsItem):
         self._trace_pixmap_cache = TracePixmapCache(
             read_view,
             content_width=content_width,
-            row_height=row_height,
+            row_height=self._row_height,
             scale_x=scale_x,
             scale_y=scale_y,
             show_trim_region=show_trim_region,
@@ -1507,7 +1527,7 @@ class ChromatogramReadGraphicsItem(QGraphicsItem):
         )
         self._last_exposed_left = 0.0
         self._last_exposed_right = float(content_width)
-        self.setPos(0, row_index * row_height)
+        self.setPos(row_geometry.left(), row_geometry.top())
 
     def boundingRect(self) -> QRectF:  # noqa: N802 - Qt override
         return QRectF(0, 0, self._content_width, self._row_height)
@@ -1616,7 +1636,7 @@ class ChromatogramReadGraphicsItem(QGraphicsItem):
                 and self._selected_base.raw_index == raw_index
             ):
                 painter.fillRect(QRectF(x - 8, sequence_y - 12, 16, 24), QColor("#FFF176"))
-            painter.setPen(_BASE_COLORS.get(base, QColor("black")))
+            painter.setPen(_BASE_COLORS.get(base, base_identity_color(base)))
             painter.drawStaticText(QPointF(x - 5, sequence_y - 8), static_text)
 
     def _paint_position_ticks(self, painter: QPainter, exposed: QRectF) -> None:
@@ -1900,6 +1920,12 @@ def _build_tick_items(
             label = str(trimmed_position)
             items.append((base_positions[raw_index], label, QStaticText(label)))
     return tuple(items)
+
+
+def _centered_text_baseline(center_y: float, metrics: QFontMetricsF) -> float:
+    """Return a baseline that centers glyph bounds at ``center_y``."""
+
+    return center_y + (metrics.ascent() - metrics.descent()) / 2
 
 
 def _trim_overlay_scene_rects(

@@ -259,7 +259,15 @@ class BlastResultStudioViewer(BaseViewer):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         self._summary = QLabel()
+        self._project_storage_feedback = QLabel(
+            "Stored in Project Results. Save Project to persist it to disk."
+        )
+        self._project_storage_feedback.setObjectName("blastProjectStorageFeedback")
+        self._project_storage_feedback.setToolTip(
+            "This refers to the current Project, not an Excel or TSV export file."
+        )
         layout.addWidget(self._summary)
+        layout.addWidget(self._project_storage_feedback)
         filter_box = QWidget()
         form = QFormLayout(filter_box)
         self._scientific_name = QLineEdit()
@@ -329,6 +337,12 @@ class BlastResultStudioViewer(BaseViewer):
         self._top_hit_only.toggled.connect(self._refresh_table)
         self._top_hit_only.toggled.connect(self._apply_metadata_button.setEnabled)
         layout.addWidget(self._table, 1)
+
+    def show_project_storage_feedback(self, message: str) -> None:
+        """Show Controller-confirmed Project Results storage without implying export."""
+
+        self._project_storage_feedback.setText(str(message))
+        self.status_message_changed.emit(str(message))
 
     def _refresh_table(self) -> None:
         displayed_hits = tuple(

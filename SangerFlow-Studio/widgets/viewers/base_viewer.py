@@ -77,3 +77,19 @@ class BaseViewer(QWidget):
 
     def close_viewer(self) -> bool:
         return True
+
+    def prepare_close(self) -> object | None:
+        """Collect a close intent without changing this viewer.
+
+        ``TabManager`` uses this hook for Project close and application quit.
+        Plain viewers have no working copy to protect, so their normal close
+        operation remains the commit step. Editors override this pair to keep
+        Save/Discard non-destructive until every open viewer allows closing.
+        """
+
+        return "close"
+
+    def commit_close(self, _intent: object) -> bool:
+        """Apply a previously accepted close intent."""
+
+        return self.close_viewer()
