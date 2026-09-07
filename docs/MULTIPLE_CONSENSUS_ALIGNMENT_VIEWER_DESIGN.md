@@ -10,7 +10,7 @@
 
 ## 1. Positioning
 
-SangerFlowでは、同一sample内のF/R contig assemblyと、複数sample間のsequence比較を異なる処理として扱う。
+SAFでは、同一sample内のF/R contig assemblyと、複数sample間のsequence比較を異なる処理として扱う。
 
 | 画面・処理 | 対象 | 役割 | 行わないこと |
 |---|---|---|---|

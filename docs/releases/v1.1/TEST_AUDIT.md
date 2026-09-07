@@ -1,6 +1,6 @@
 # v1.1 automated-test audit
 
-This is a compact audit of the public v1.0.0 test suite. Assessments describe
+This is a compact audit of the public v1.0.0 SangerFlow test suite. Assessments describe
 automated coverage, not a claim that every scientific condition has been
 validated with real biological data.
 

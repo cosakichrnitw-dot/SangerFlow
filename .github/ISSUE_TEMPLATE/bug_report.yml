@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem in SangerFlow Studio or the public workflow.
+description: Report a reproducible problem in Sanger Analysis Flow (SAF) or the public workflow.
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -11,7 +11,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: SangerFlow version
+      label: SAF version
       placeholder: "1.0.0"
     validations:
       required: true
@@ -29,7 +29,7 @@ body:
   - type: dropdown
     id: launch-mode
     attributes:
-      label: How did you run SangerFlow?
+      label: How did you run SAF?
       options:
         - Packaged application
         - Source / Python environment

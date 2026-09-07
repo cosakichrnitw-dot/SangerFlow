@@ -46,7 +46,7 @@ def decode_project_dataset_drag(mime_data: QMimeData) -> InternalDatasetDrag:
     """Decode a Dataset drag without looking up or reconstructing data values."""
 
     if not mime_data.hasFormat(PROJECT_DATASET_MIME_TYPE):
-        raise InternalDatasetDragError("This is not a SangerFlow Project Dataset drag.")
+        raise InternalDatasetDragError("This is not a SAF Project Dataset drag.")
     try:
         raw = bytes(mime_data.data(PROJECT_DATASET_MIME_TYPE)).decode("utf-8")
         value = json.loads(raw)

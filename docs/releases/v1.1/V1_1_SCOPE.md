@@ -6,7 +6,8 @@ commitment.
 ## Goals
 
 - Mature and stabilize the v1.0 baseline.
-- Prepare a careful transition from SangerFlow to Sanger Analysis Flow (SAF).
+- Complete the careful transition from the v1.0 SangerFlow name to Sanger
+  Analysis Flow (SAF).
 - Improve workflow usability without destabilizing the scientific core.
 - Strengthen validation and traceability.
 

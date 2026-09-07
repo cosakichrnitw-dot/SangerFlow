@@ -101,7 +101,7 @@ class BlastSettingsDialog(QDialog):
         layout.addWidget(self._online_group)
 
         self._website_note = QLabel(
-            "SangerFlow will prepare exact-ID multi-FASTA. Paste or upload it on the official "
+            "SAF will prepare exact-ID multi-FASTA. Paste or upload it on the official "
             "NCBI BLAST website, download BLAST XML, then import it here."
         )
         self._website_note.setWordWrap(True)

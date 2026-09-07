@@ -2,7 +2,7 @@
 
 ## この文書の目的
 
-この文書は、SangerFlowにおける次世代Forward/Reverse pair consensusの責務、適用範囲、判断根拠、および段階的な実装方針を定義する。現在のコードを唯一の実装事実とする。`core/consensus.py` のConsensus v1と、分離された実験的実装である `core/consensus_v2.py` を基準に、v2.1で安定化すべき契約を明文化する。
+この文書は、SAFにおける次世代Forward/Reverse pair consensusの責務、適用範囲、判断根拠、および段階的な実装方針を定義する。現在のコードを唯一の実装事実とする。`core/consensus.py` のConsensus v1と、分離された実験的実装である `core/consensus_v2.py` を基準に、v2.1で安定化すべき契約を明文化する。
 
 この文書の「実装済み」は現在のコードで確認した事項である。「提案」は将来のv2.1採用・統合前に検証が必要な仕様であり、科学的に確定した閾値や自動採用基準ではない。
 

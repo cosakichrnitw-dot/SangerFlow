@@ -127,7 +127,7 @@ class QualityReportDock(QDockWidget):
             "unchecked reads remain in the Project and all Dataset revisions."
         )
         self._table.setToolTip(
-            "Read visibility is a viewer setting. SangerFlow never removes a read "
+            "Read visibility is a viewer setting. SAF never removes a read "
             "because of its quality score."
         )
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)

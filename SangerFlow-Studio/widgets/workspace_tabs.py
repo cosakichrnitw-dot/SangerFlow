@@ -11,7 +11,7 @@ class WorkspaceTabs(QTabWidget):
     def __init__(self, state: AppState, controller: ProjectController) -> None:
         super().__init__()
         self._controller = controller
-        self.addTab(self._message_tab("Welcome to SangerFlow-Studio"), "Welcome")
+        self.addTab(self._message_tab("Welcome to Sanger Analysis Flow (SAF)"), "Welcome")
         self._project_summary = ProjectSummaryGraph(state, controller)
         self.addTab(self._project_summary, "Project Summary")
         self.currentChanged.connect(self._tab_changed)

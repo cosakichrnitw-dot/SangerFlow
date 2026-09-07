@@ -8,7 +8,7 @@ Last Updated: 2026-07-31
 
 # 1. Overview
 
-The data model defines how sequencing data is represented and transferred throughout SangerFlow.
+The data model defines how sequencing data is represented and transferred throughout SAF.
 
 Every analysis module operates on shared data models instead of raw files.
 

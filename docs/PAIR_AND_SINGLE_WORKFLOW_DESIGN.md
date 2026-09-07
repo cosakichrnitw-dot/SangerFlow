@@ -2,7 +2,7 @@
 
 ## この文書の目的
 
-この文書は、Forward/Reverse readのcontig assemblyとForward-only single-read workflowが同じAB1フォルダに混在する利用を想定した、SangerFlowの正式な**設計提案**を記録する。
+この文書は、Forward/Reverse readのcontig assemblyとForward-only single-read workflowが同じAB1フォルダに混在する利用を想定した、SAFの正式な**設計提案**を記録する。
 
 現在のコードを唯一の実装事実の基準とする。ここで示す `Sample`、`FinalSequence`、自動ペアリング、manual base-call edit、`PairAssemblyWindow`、REVIEW queue、assembly指標、および下流連携は、特記しない限り**未実装の提案**である。現在の実装状況は[CURRENT_STATUS.md](CURRENT_STATUS.md)、既存構造は[Architecture.md](Architecture.md)を参照する。
 

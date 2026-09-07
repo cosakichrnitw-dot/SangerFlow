@@ -1,4 +1,7 @@
-# SangerFlow v1.0 supported platforms
+# Sanger Analysis Flow (SAF) supported platforms
+
+The v1.0 baseline was released as SangerFlow. This document records the
+platform boundary carried forward into SAF development.
 
 ## Primary release targets
 

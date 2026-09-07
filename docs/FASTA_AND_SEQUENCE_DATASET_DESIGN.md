@@ -4,7 +4,7 @@
 
 ### 0.1 目的
 
-現在のSangerFlowは `SangerRead` とAB1読込を主な入口とし、FASTAは主にMAFFT入力またはexport形式として扱っている。本設計は、FASTAをAB1と並ぶ正式なinput datasetとして扱い、AB1由来、consensus由来、reviewed consensus由来、外部FASTA由来の配列を、同じ明示的な境界からMAFFT、Alignment Editor、Identification、exportへ渡せるようにする。
+現在のSAFは `SangerRead` とAB1読込を主な入口とし、FASTAは主にMAFFT入力またはexport形式として扱っている。本設計は、FASTAをAB1と並ぶ正式なinput datasetとして扱い、AB1由来、consensus由来、reviewed consensus由来、外部FASTA由来の配列を、同じ明示的な境界からMAFFT、Alignment Editor、Identification、exportへ渡せるようにする。
 
 対象とするFASTAは次のとおりである。
 
@@ -12,7 +12,7 @@
 - 外部から受領したFASTA
 - GenBankまたはBOLD由来のFASTA
 - 既存の整列済みFASTA
-- SangerFlowで生成したConsensus FASTA
+- SAFで生成したConsensus FASTA
 - Reviewed Consensus FASTA
 
 ### 0.2 今回の範囲

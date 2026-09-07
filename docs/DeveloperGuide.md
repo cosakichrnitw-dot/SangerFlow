@@ -8,7 +8,7 @@ Last Updated: 2026-07-31
 
 # 1. Overview
 
-This document defines the development practices used in the SangerFlow project.
+This document defines the development practices used in the SAF project.
 
 Its purpose is to keep the codebase consistent, maintainable, testable, and understandable as the project grows.
 
@@ -18,7 +18,7 @@ All contributors should follow the rules described in this guide unless a docume
 
 # 2. Development Principles
 
-SangerFlow development follows five primary principles.
+SAF development follows five primary principles.
 
 ## 2.1 Design Before Implementation
 
@@ -279,7 +279,7 @@ Constants may remain at module level when they are immutable and clearly named.
 
 # 5. Python Coding Standards
 
-SangerFlow follows standard modern Python conventions.
+SAF follows standard modern Python conventions.
 
 ## 5.1 Python Version
 
@@ -1263,7 +1263,7 @@ These practices should be introduced gradually and only when they improve reliab
 
 # 21. Summary
 
-The SangerFlow development process prioritizes:
+The SAF development process prioritizes:
 
 - clear architecture,
 - modular implementation,

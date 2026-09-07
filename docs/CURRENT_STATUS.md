@@ -1,15 +1,16 @@
-# SangerFlow v1.0 current status
+# Sanger Analysis Flow (SAF) current status
 
 ## Release state
 
-SangerFlow is in the v1.0 release-preparation / feature-freeze phase. The
-official researcher-facing GUI is **SangerFlow Studio (PySide6/Qt)**.
+SAF is preparing its v1.1 development cycle from the published v1.0 baseline.
+The v1.0 release was published as **SangerFlow Studio**; the current
+researcher-facing GUI is **Sanger Analysis Flow (SAF)**, built with PySide6/Qt.
 
 ## Support boundary
 
 | Item | v1.0 status |
 |---|---|
-| Official desktop GUI | **SangerFlow Studio (PySide6/Qt)** |
+| Official desktop GUI | **Sanger Analysis Flow (SAF, PySide6/Qt)** |
 | AB1 import, chromatogram review, QC and trimming | Supported in Studio |
 | F/R consensus review and reviewed-consensus output | Supported in Studio |
 | Sequence Editor and MAFFT alignment | Supported in Studio; MAFFT is an external dependency |

@@ -1124,7 +1124,7 @@ class ProjectController(QObject):
                 parent,
                 "MAFFT Not Found",
                 "MAFFT is required for sequence alignment.\n\n"
-                f"SangerFlow could not use the configured MAFFT executable.\n\n{error}",
+                f"SAF could not use the configured MAFFT executable.\n\n{error}",
             )
             return None
 

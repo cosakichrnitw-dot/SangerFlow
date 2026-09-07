@@ -1,8 +1,8 @@
-# SangerFlow ロードマップ
+# Sanger Analysis Flow (SAF) ロードマップ
 
 > **Status note:** this roadmap contains historical Tkinter and BOLD planning
-> material. For v1.0, SangerFlow Studio/PySide6 is the official GUI, and BOLD
-> online identification is not a supported user-facing workflow.
+> material. The v1.0 release used SangerFlow Studio/PySide6; BOLD online
+> identification is not a supported current SAF user-facing workflow.
 
 ## この文書の目的
 

@@ -57,9 +57,9 @@ class MafftSetupDialog(QDialog):
         self.setMinimumWidth(430)
         layout = QVBoxLayout(self)
         explanation = QLabel(
-            "MAFFT is an external alignment program used by SangerFlow.\n\n"
+            "MAFFT is an external alignment program used by SAF.\n\n"
             "On macOS, install MAFFT separately, then choose its executable here. "
-            "SangerFlow does not install or modify system software for you."
+            "SAF does not install or modify system software for you."
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
@@ -117,7 +117,7 @@ class MafftNotFoundDialog(QDialog):
         layout = QVBoxLayout(self)
         message = QLabel(
             "MAFFT is required for sequence alignment.\n\n"
-            "SangerFlow could not find a working MAFFT installation on this computer."
+            "SAF could not find a working MAFFT installation on this computer."
         )
         message.setWordWrap(True)
         layout.addWidget(message)

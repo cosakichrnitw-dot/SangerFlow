@@ -24,7 +24,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._state = state
         self._controller = controller
-        self.setWindowTitle("SangerFlow-Studio")
+        self.setWindowTitle("Sanger Analysis Flow (SAF)")
         self.resize(1400, 860)
         self._project_view = ProjectView(state, controller)
         self._project_view.project_explorer_visibility_changed.connect(
@@ -358,7 +358,7 @@ class MainWindow(QMainWindow):
             self,
             "Open Project",
             "",
-            "SangerFlow Bundle (*.sangerflow);;All Files (*)",
+            "SAF Project Bundle (*.sangerflow);;All Files (*)",
         )
         if not filepath:
             return
@@ -607,7 +607,7 @@ class MainWindow(QMainWindow):
             self,
             "Save Project Bundle",
             self._suggested_bundle_path(),
-            "SangerFlow Bundle (*.sangerflow);;All Files (*)",
+            "SAF Project Bundle (*.sangerflow);;All Files (*)",
         )
         if not filepath:
             return False
@@ -726,9 +726,9 @@ class MainWindow(QMainWindow):
     def _update_window_title(self) -> None:
         project = self._state.current_project
         if project is None:
-            title = "SangerFlow-Studio"
+            title = "Sanger Analysis Flow (SAF)"
         else:
-            title = f"SangerFlow-Studio — {getattr(project, 'name', 'Project')}"
+            title = f"Sanger Analysis Flow (SAF) — {getattr(project, 'name', 'Project')}"
         if self._state.is_dirty:
             title += " *"
         self.setWindowTitle(title)
