@@ -37,7 +37,11 @@ from core.assembly_view_builders import (
 )
 from app.icon_registry import studio_icon
 from core.consensus_review_session import ConsensusReviewSession
-from core.consensus_v2_1 import ConsensusV21Scoring, build_pair_consensus_v2_1
+from core.consensus_v2_1 import (
+    ConsensusV21DecisionReason,
+    ConsensusV21Scoring,
+    build_pair_consensus_v2_1,
+)
 from core.human_review import DecisionType, HumanReviewDecision
 from core.lineage import RecordProvenance, RecordRef
 from core.pair_alignment import align_pair
@@ -87,6 +91,22 @@ def _is_conflict_column(column: object) -> bool:
     return (
         "conflict" in status
         or getattr(evidence, "decision_reason", None) == "UNRESOLVED_CONFLICT"
+    )
+
+
+def _is_low_quality_column(column: object) -> bool:
+    """Return whether existing consensus evidence marked this column LOW_QUALITY.
+
+    Navigation deliberately consumes the immutable decision reason that the
+    consensus-v2.1 workflow already produced.  It does not inspect quality
+    values or introduce another quality threshold in the viewer.
+    """
+
+    evidence = getattr(column, "review_evidence", None)
+    reason = getattr(evidence, "decision_reason", None)
+    return (
+        getattr(reason, "value", reason)
+        == ConsensusV21DecisionReason.LOW_QUALITY.value
     )
 
 
@@ -956,6 +976,11 @@ class SingleConsensusReviewViewer(BaseViewer):
             for index, column in enumerate(self._view_model.columns)
             if _is_conflict_column(column)
         )
+        self._low_quality_positions = tuple(
+            index
+            for index, column in enumerate(self._view_model.columns)
+            if _is_low_quality_column(column)
+        )
         self._undo_stack: list[tuple[str, object]] = []
         self._redo_stack: list[tuple[str, object]] = []
         self._action_provider = SingleConsensusReviewActionProvider()
@@ -1020,6 +1045,8 @@ class SingleConsensusReviewViewer(BaseViewer):
             "single_consensus.jump_reverse",
             "single_consensus.previous_conflict",
             "single_consensus.next_conflict",
+            "single_consensus.previous_low_quality",
+            "single_consensus.next_low_quality",
             "single_consensus.undo",
             "single_consensus.redo",
             "single_consensus.set_selection_gap",
@@ -1045,6 +1072,12 @@ class SingleConsensusReviewViewer(BaseViewer):
 
         return self._conflict_positions
 
+    @property
+    def low_quality_positions(self) -> tuple[int, ...]:
+        """Zero-based PairAlignment columns already marked LOW_QUALITY."""
+
+        return self._low_quality_positions
+
     def next_conflict(self) -> bool:
         return self._select_relative_conflict(1)
 
@@ -1052,18 +1085,43 @@ class SingleConsensusReviewViewer(BaseViewer):
         return self._select_relative_conflict(-1)
 
     def _select_relative_conflict(self, direction: int) -> bool:
-        if not self._conflict_positions:
-            self.status_message_changed.emit("This F/R pair has no conflict columns.")
+        return self._select_relative_position(
+            self._conflict_positions,
+            direction,
+            "This F/R pair has no conflict columns.",
+        )
+
+    def next_low_quality(self) -> bool:
+        return self._select_relative_low_quality(1)
+
+    def previous_low_quality(self) -> bool:
+        return self._select_relative_low_quality(-1)
+
+    def _select_relative_low_quality(self, direction: int) -> bool:
+        return self._select_relative_position(
+            self._low_quality_positions,
+            direction,
+            "This F/R pair has no low-quality consensus columns.",
+        )
+
+    def _select_relative_position(
+        self,
+        positions: tuple[int, ...],
+        direction: int,
+        empty_message: str,
+    ) -> bool:
+        if not positions:
+            self.status_message_changed.emit(empty_message)
             return False
         if direction > 0:
             target = next(
-                (position for position in self._conflict_positions if position > self._selected_position),
-                self._conflict_positions[0],
+                (position for position in positions if position > self._selected_position),
+                positions[0],
             )
         else:
             target = next(
-                (position for position in reversed(self._conflict_positions) if position < self._selected_position),
-                self._conflict_positions[-1],
+                (position for position in reversed(positions) if position < self._selected_position),
+                positions[-1],
             )
         self.select_position(target)
         return True
@@ -1309,10 +1367,20 @@ class SingleConsensusReviewViewer(BaseViewer):
         jump_reverse_button.clicked.connect(self.jump_to_reverse_trace)
         previous_conflict_button = QPushButton("Previous Conflict")
         previous_conflict_button.setIcon(studio_icon("previous"))
+        previous_conflict_button.setEnabled(bool(self._conflict_positions))
         previous_conflict_button.clicked.connect(self.previous_conflict)
         next_conflict_button = QPushButton("Next Conflict")
         next_conflict_button.setIcon(studio_icon("next"))
+        next_conflict_button.setEnabled(bool(self._conflict_positions))
         next_conflict_button.clicked.connect(self.next_conflict)
+        previous_low_quality_button = QPushButton("Previous Low Quality")
+        previous_low_quality_button.setIcon(studio_icon("previous"))
+        previous_low_quality_button.setEnabled(bool(self._low_quality_positions))
+        previous_low_quality_button.clicked.connect(self.previous_low_quality)
+        next_low_quality_button = QPushButton("Next Low Quality")
+        next_low_quality_button.setIcon(studio_icon("next"))
+        next_low_quality_button.setEnabled(bool(self._low_quality_positions))
+        next_low_quality_button.clicked.connect(self.next_low_quality)
         accept_button = QPushButton("Accept Auto")
         accept_button.setIcon(studio_icon("accept"))
         accept_button.clicked.connect(self.accept_selected)
@@ -1329,6 +1397,8 @@ class SingleConsensusReviewViewer(BaseViewer):
         edit_buttons.addWidget(jump_reverse_button)
         edit_buttons.addWidget(previous_conflict_button)
         edit_buttons.addWidget(next_conflict_button)
+        edit_buttons.addWidget(previous_low_quality_button)
+        edit_buttons.addWidget(next_low_quality_button)
         edit_buttons.addWidget(accept_button)
         edit_buttons.addWidget(undo_button)
         edit_buttons.addWidget(redo_button)
@@ -2416,6 +2486,20 @@ class SingleConsensusReviewActionProvider:
                 tooltip="Select the next PairAlignment conflict column",
                 callback=getattr(viewer, "next_conflict"),
                 enabled=bool(getattr(viewer, "conflict_positions", ())),
+            ),
+            ViewerAction(
+                action_id="single_consensus.previous_low_quality",
+                label="Previous Low Quality",
+                tooltip="Select the previous PairAlignment column already marked low quality",
+                callback=getattr(viewer, "previous_low_quality"),
+                enabled=bool(getattr(viewer, "low_quality_positions", ())),
+            ),
+            ViewerAction(
+                action_id="single_consensus.next_low_quality",
+                label="Next Low Quality",
+                tooltip="Select the next PairAlignment column already marked low quality",
+                callback=getattr(viewer, "next_low_quality"),
+                enabled=bool(getattr(viewer, "low_quality_positions", ())),
             ),
             ViewerAction(
                 action_id="single_consensus.undo",

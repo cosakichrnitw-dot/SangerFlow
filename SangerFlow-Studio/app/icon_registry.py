@@ -61,6 +61,8 @@ _ACTION_ICON_NAMES: dict[str, str] = {
     "single_consensus.jump_reverse": "previous",
     "single_consensus.previous_conflict": "previous",
     "single_consensus.next_conflict": "next",
+    "single_consensus.previous_low_quality": "previous",
+    "single_consensus.next_low_quality": "next",
     "single_consensus.create_dataset": "create_dataset",
     "multiple_consensus.previous_variable_site": "previous",
     "multiple_consensus.next_variable_site": "next",
