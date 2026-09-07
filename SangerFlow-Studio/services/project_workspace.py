@@ -76,6 +76,25 @@ def workspace_for_bundle(bundle_path: str | Path | None) -> ProjectWorkspace | N
     return ProjectWorkspace(root=path.parent, bundle_path=path)
 
 
+def resolve_workspace_source_path(
+    workspace_root: Path | None,
+    workspace_relative_path: str | Path | None,
+) -> Path | None:
+    """Resolve one persisted workspace-relative source path safely.
+
+    Source references stored in a Project may point into its adjacent workspace.
+    Only a non-absolute path without parent traversal is accepted, so a saved
+    relative value can never escape the Project Workspace root.
+    """
+
+    if workspace_root is None or not workspace_relative_path:
+        return None
+    relative = Path(workspace_relative_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    return workspace_root / relative
+
+
 def filesystem_safe_name(value: str) -> str:
     """Return a portable, readable filename component without changing Project names."""
 

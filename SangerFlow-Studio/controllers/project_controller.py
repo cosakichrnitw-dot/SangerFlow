@@ -77,6 +77,7 @@ from services.ab1_source_preflight import preflight_ab1_copy_sources
 from services.project_workspace import (
     ProjectWorkspace,
     create_project_workspace,
+    resolve_workspace_source_path,
     workspace_for_bundle,
 )
 
@@ -190,6 +191,21 @@ class ProjectController(QObject):
         self._tab_manager.open_viewer(
             viewer,
             resource_key=f"project-records:{project.project_id}",
+        )
+        return viewer
+
+    def open_project_provenance_viewer(self) -> object:
+        """Open the read-only persisted Project QC & Provenance summary."""
+
+        project = self._require_current_project()
+        if self._viewer_context is None or self._tab_manager is None:
+            raise ValueError("Project QC & Provenance Viewer is not configured.")
+        from widgets.viewers.project_provenance_viewer import create_project_provenance_viewer
+
+        viewer = create_project_provenance_viewer(self._viewer_context, project)
+        self._tab_manager.open_viewer(
+            viewer,
+            resource_key=f"project-provenance:{project.project_id}",
         )
         return viewer
 
@@ -2924,8 +2940,7 @@ def _ab1_source_candidates(
     candidates: list[Path] = []
     if absolute_path:
         candidates.append(Path(absolute_path))
-    if workspace_root is not None and workspace_relative_path:
-        relative = Path(workspace_relative_path)
-        if not relative.is_absolute() and ".." not in relative.parts:
-            candidates.append(workspace_root / relative)
+    workspace_path = resolve_workspace_source_path(workspace_root, workspace_relative_path)
+    if workspace_path is not None:
+        candidates.append(workspace_path)
     return tuple(candidates)
