@@ -31,6 +31,7 @@ from widgets.viewers.identification_result_viewers import (
 from widgets.viewers.placeholder_viewer import PlaceholderViewer
 from widgets.viewers.quality_report_viewer import QualityReportViewer
 from widgets.viewers.project_records_viewer import ProjectRecordsViewer, create_project_records_viewer
+from widgets.viewers.project_provenance_viewer import ProjectProvenanceViewer, create_project_provenance_viewer
 from widgets.viewers.viewer_actions import ViewerAction, ViewerActionProvider
 from widgets.viewers.viewer_context import ViewerContext
 from widgets.viewers.viewer_registry import ViewerDescriptor, ViewerRegistry
@@ -49,6 +50,7 @@ __all__ = [
     "PlaceholderViewer",
     "QualityReportViewer",
     "ProjectRecordsViewer",
+    "ProjectProvenanceViewer",
     "SingleConsensusReviewViewer",
     "BlastResultStudioViewer",
     "BoldResultStudioViewer",
@@ -65,6 +67,7 @@ __all__ = [
     "create_blast_result_viewer",
     "create_bold_result_viewer",
     "create_project_records_viewer",
+    "create_project_provenance_viewer",
     "build_consensus_sample_rows",
     "has_chromatogram_sources",
     "reads_from_dataset",

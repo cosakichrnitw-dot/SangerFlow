@@ -122,6 +122,15 @@ class MainWindow(QMainWindow):
         self._project_records_action.setToolTip("Browse and combine records across Project datasets")
         self._project_records_action.triggered.connect(self._open_project_records)
         self._project_menu.addAction(self._project_records_action)
+        self._project_provenance_action = QAction(
+            studio_icon("project_records"), "Project QC & Provenance", self
+        )
+        self._project_provenance_action.setEnabled(self._state.current_project is not None)
+        self._project_provenance_action.setToolTip(
+            "Review persisted Project lineage, record provenance, and preparation state"
+        )
+        self._project_provenance_action.triggered.connect(self._open_project_provenance)
+        self._project_menu.addAction(self._project_provenance_action)
         tools_menu = self.menuBar().addMenu("Tools")
         tool_settings_action = QAction(studio_icon("settings"), "Tool Settings…", self)
         tool_settings_action.triggered.connect(self._open_tool_settings)
@@ -307,6 +316,8 @@ class MainWindow(QMainWindow):
         self._edit_menu.addSeparator()
         self._project_records_action.setEnabled(self._state.current_project is not None)
         self._project_menu.addAction(self._project_records_action)
+        self._project_provenance_action.setEnabled(self._state.current_project is not None)
+        self._project_menu.addAction(self._project_provenance_action)
         self._project_menu.addSeparator()
         actions = self._project_view.action_manager
         groups = {
@@ -389,6 +400,12 @@ class MainWindow(QMainWindow):
             self._controller.open_project_records_viewer()
         except Exception as error:
             QMessageBox.warning(self, "Project Records", str(error))
+
+    def _open_project_provenance(self) -> None:
+        try:
+            self._controller.open_project_provenance_viewer()
+        except Exception as error:
+            QMessageBox.warning(self, "Project QC & Provenance", str(error))
 
     def _open_tool_settings(self) -> None:
         ToolSettingsDialog(self).exec()
