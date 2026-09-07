@@ -325,7 +325,7 @@ class MainWindowTests(unittest.TestCase):
         window.show()
         application.processEvents()
 
-        self.assertEqual(window.windowTitle(), "SangerFlow-Studio")
+        self.assertEqual(window.windowTitle(), "Sanger Analysis Flow (SAF)")
         self.assertEqual(
             [action.text() for action in window.menuBar().actions()],
             ["File", "Edit", "View", "Dataset", "Metadata", "Align", "Identify", "Export", "Project", "Tools", "Help"],
@@ -410,15 +410,15 @@ class MainWindowTests(unittest.TestCase):
 
         window._state.set_project(project)
         application.processEvents()
-        self.assertEqual(window.windowTitle(), "SangerFlow-Studio — Central Java")
+        self.assertEqual(window.windowTitle(), "Sanger Analysis Flow (SAF) — Central Java")
 
         window._state.mark_dirty()
         application.processEvents()
-        self.assertEqual(window.windowTitle(), "SangerFlow-Studio — Central Java *")
+        self.assertEqual(window.windowTitle(), "Sanger Analysis Flow (SAF) — Central Java *")
 
         window._state.mark_clean()
         application.processEvents()
-        self.assertEqual(window.windowTitle(), "SangerFlow-Studio — Central Java")
+        self.assertEqual(window.windowTitle(), "Sanger Analysis Flow (SAF) — Central Java")
 
         window.close()
 

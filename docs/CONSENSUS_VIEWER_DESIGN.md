@@ -2,7 +2,7 @@
 
 ## この文書の目的
 
-この文書は、SangerFlowにおけるConsensus Viewerの役割、表示mode、既存Main Viewerとの座標接続、および将来のreview workflowを定義する。Consensus Viewerは、単一sampleのForward/Reverse contigを確認する画面であると同時に、複数sampleのconsensus sequenceをalignmentして確認するreview interfaceである。
+この文書は、SAFにおけるConsensus Viewerの役割、表示mode、既存Main Viewerとの座標接続、および将来のreview workflowを定義する。Consensus Viewerは、単一sampleのForward/Reverse contigを確認する画面であると同時に、複数sampleのconsensus sequenceをalignmentして確認するreview interfaceである。
 
 現在のコードを唯一の実装事実とする。`PairAlignment`、`ConsensusV21Decision`、`ReviewEvidence`、`TraceJumpTarget`、Main ViewerのCoordinate Inspectorは現在存在する。一方、Consensus Viewer本体、multiple consensus alignment mode、Main Viewerへの実際のjump接続、manual annotation、manual editは**未実装の提案**である。Consensus algorithm、Review Engine、GUI描画の既存動作を変更する仕様ではない。
 

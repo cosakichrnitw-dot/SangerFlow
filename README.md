@@ -1,8 +1,8 @@
-# SangerFlow
+# Sanger Analysis Flow (SAF)
 
-SangerFlow is an open-source desktop application for transparent,
+Sanger Analysis Flow (SAF) is an open-source desktop application for transparent,
 provenance-aware Sanger sequencing workflows. Its official interface is
-**SangerFlow Studio**, built with PySide6/Qt.
+**SAF**, built with PySide6/Qt.
 
 ## v1.0 features
 
@@ -32,7 +32,7 @@ AB1 import
 
 ## Installation from source
 
-SangerFlow requires Python 3.10 or later. Python 3.12 matches the public CI
+SAF requires Python 3.10 or later. Python 3.12 matches the public CI
 configuration.
 
 ```bash
@@ -73,7 +73,7 @@ for maintainers in [packaging/macos/README.md](packaging/macos/README.md).
 
 ## Data and project files
 
-SangerFlow project files preserve datasets, revisions, provenance, and analysis
+SAF project files preserve datasets, revisions, provenance, and analysis
 results. Keep independent backups of research data and review all quality,
 consensus, and identification decisions before drawing biological conclusions.
 Never upload unpublished AB1/ABI files, sequence exports, `.sangerflow`
@@ -94,11 +94,11 @@ history and design context.
 
 ## Citation
 
-Please use the metadata in [CITATION.cff](CITATION.cff) when citing SangerFlow.
+Please use the metadata in [CITATION.cff](CITATION.cff) when citing SAF.
 
 ## License and notices
 
-SangerFlow is released under the [MIT License](LICENSE). Third-party components
+SAF is released under the [MIT License](LICENSE). Third-party components
 remain subject to their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 Project-original and commissioned icon assets are described in
 [PROJECT_ASSETS_NOTICE.md](PROJECT_ASSETS_NOTICE.md).

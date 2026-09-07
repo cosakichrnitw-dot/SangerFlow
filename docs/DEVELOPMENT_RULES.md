@@ -1,8 +1,8 @@
-# SangerFlow 開発ルール
+# Sanger Analysis Flow (SAF) 開発ルール
 
 ## この文書の目的
 
-この文書は、人間、Codex、CursorなどがSangerFlowを共同で開発・保守する際の最小ルールを定める。現在のコードを唯一の事実基準とし、READMEや既存文書と矛盾する場合はコードを優先する。現在の実装構成は[Architecture.md](Architecture.md)、可変のバージョン・依存関係・テスト状態は[CURRENT_STATUS.md](CURRENT_STATUS.md)を参照する。
+この文書は、人間、Codex、CursorなどがSAFを共同で開発・保守する際の最小ルールを定める。現在のコードを唯一の事実基準とし、READMEや既存文書と矛盾する場合はコードを優先する。現在の実装構成は[Architecture.md](Architecture.md)、可変のバージョン・依存関係・テスト状態は[CURRENT_STATUS.md](CURRENT_STATUS.md)を参照する。
 
 ## レイヤーと責務
 

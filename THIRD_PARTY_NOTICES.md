@@ -1,11 +1,11 @@
 # Third-party notices
 
-SangerFlow source code is distributed under the MIT License. The components
+Sanger Analysis Flow (SAF) source code is distributed under the MIT License. The components
 listed below remain subject to their own licenses. This document is a concise
 release inventory, not a replacement for the full license text or notices
 distributed by an upstream project.
 
-| Component | Role in SangerFlow | Distribution role | Upstream license / notice |
+| Component | Role in SAF | Distribution role | Upstream license / notice |
 |---|---|---|---|
 | [Python](https://www.python.org/) | Runtime | Python 3.12.10 is bundled in the macOS application | [PSF License Agreement](https://docs.python.org/3/license.html); the corresponding text is bundled as `Contents/Resources/Legal/Python-PSF-LICENSE.txt` |
 | [PySide6 / Qt](https://doc.qt.io/qtforpython-6/) | Studio GUI and Qt runtime | Bundled in a macOS app build | Qt for Python community licensing is available under LGPLv3/GPLv3; see the [Qt licensing page](https://www.qt.io/licensing/open-source-lgpl-obligations). A release bundle must retain the applicable Qt/PySide notices. |
@@ -19,7 +19,7 @@ distributed by an upstream project.
 | [MAFFT](https://mafft.cbrc.jp/alignment/software/) | External alignment executable | Not bundled; separately installed by the user | Upstream source distributions identify the no-extension source package as BSD. |
 
 NCBI BLAST is an external network service, not a bundled Python dependency.
-Users who submit queries through SangerFlow are responsible for complying with
+Users who submit queries through SAF are responsible for complying with
 NCBI service guidance and terms.
 
 Before distributing a packaged application, verify the exact bundled versions

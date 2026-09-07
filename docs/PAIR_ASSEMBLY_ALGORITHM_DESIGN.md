@@ -1,8 +1,8 @@
-# SangerFlow Pair Assembly Algorithm Design
+# SAF Pair Assembly Algorithm Design
 
 ## この文書の目的
 
-この文書は、CAP3に依存せず、同一PCR産物由来のForward / Reverse readを対象にSangerFlow内でcontigを生成する独自assemblyアルゴリズムの**設計提案**を定義する。
+この文書は、CAP3に依存せず、同一PCR産物由来のForward / Reverse readを対象にSAF内でcontigを生成する独自assemblyアルゴリズムの**設計提案**を定義する。
 
 現在のコードを実装事実の唯一の基準とする。以下のpair assembly、quality-aware alignment、`AssemblyMetrics`、`SequenceProvenance`、REVIEW判定、波形評価は、特記しない限り**未実装の提案**である。現在の実装状況は[CURRENT_STATUS.md](CURRENT_STATUS.md)、single/pair workflowの上位設計は[PAIR_AND_SINGLE_WORKFLOW_DESIGN.md](PAIR_AND_SINGLE_WORKFLOW_DESIGN.md)を参照する。
 
@@ -55,7 +55,7 @@ flowchart TD
 
 CAP3はquality valuesを利用できるassemblerである。原著では、quality valuesをoverlap計算、multiple alignment、consensus生成に利用し、Forward/Reverse constraintsも扱うと説明されている。 [Huang and Madan, 1999](https://pmc.ncbi.nlm.nih.gov/articles/PMC310812/)
 
-| 観点 | CAP3 | SangerFlow独自方式の提案価値 |
+| 観点 | CAP3 | SAF独自方式の提案価値 |
 |---|---|---|
 | 主対象 | 一般的な複数read contig assembly | 同一PCR産物の基本2-read assembly |
 | quality values | quality-aware overlap、alignment、consensusを利用 | Phredを各塩基決定・REVIEW理由へ明示的に残す |
@@ -66,7 +66,7 @@ CAP3はquality valuesを利用できるassemblerである。原著では、quali
 | GUI統合 | 外部実行・結果読込が必要 | Main Viewer、PairAssemblyWindow、FinalSequenceに内部統合 |
 | 再現性 | external tool versionとparameter管理が必要 | algorithm version、criteria snapshot、decision reasonを保存 |
 
-CAP3のquality利用は有用である。一方、SangerFlow独自方式の価値は、CAP3より良い一般assemblerを作ることではなく、AB1 trace座標、塩基provenance、REVIEW workflow、single/pair混在dataset、既存GUIとの内部統合を一貫して扱うことにある。
+CAP3のquality利用は有用である。一方、SAF独自方式の価値は、CAP3より良い一般assemblerを作ることではなく、AB1 trace座標、塩基provenance、REVIEW workflow、single/pair混在dataset、既存GUIとの内部統合を一貫して扱うことにある。
 
 ## アルゴリズム全体
 

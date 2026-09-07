@@ -1,7 +1,8 @@
 # Core Architecture
 
 > **Legacy note:** references to the Tkinter GUI are retained as historical
-> implementation context. v1.0's supported GUI is PySide6 SangerFlow Studio.
+> implementation context. v1.0's supported GUI was PySide6 SangerFlow Studio;
+> current development branding is Sanger Analysis Flow (SAF).
 
 Version: 1.0
 Status: Stable
@@ -11,11 +12,11 @@ Last Updated: 2026-07-31
 
 # 1. Overview
 
-The Core package contains all biological algorithms and data processing logic used by SangerFlow.
+The Core package contains all biological algorithms and data processing logic used by SAF.
 
 The Core layer is completely independent of the graphical user interface and can be executed from either the GUI or command-line interface (CLI).
 
-Every biological operation performed by SangerFlow must be implemented inside the Core package.
+Every biological operation performed by SAF must be implemented inside the Core package.
 
 ---
 
@@ -445,7 +446,7 @@ These should be implemented as independent modules without modifying existing Co
 
 # 8. Conclusion
 
-The Core package is the computational engine of SangerFlow.
+The Core package is the computational engine of SAF.
 
 Future development should prioritize stability, modularity, and maintainability.
 

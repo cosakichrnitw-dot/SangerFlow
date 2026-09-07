@@ -1,12 +1,12 @@
-# Contributing to SangerFlow
+# Contributing to Sanger Analysis Flow (SAF)
 
-Thank you for helping improve SangerFlow. Please use GitHub issues for bug
+Thank you for helping improve SAF. Please use GitHub issues for bug
 reports and feature proposals, and keep reports free of unpublished sequence,
 AB1, project, or sensitive metadata files.
 
 ## Development setup
 
-SangerFlow requires Python 3.10 or later. A Python 3.12 environment matches
+SAF requires Python 3.10 or later. A Python 3.12 environment matches
 the public CI configuration.
 
 ```bash

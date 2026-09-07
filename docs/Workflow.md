@@ -1,8 +1,9 @@
-# SangerFlow Studio workflow
+# Sanger Analysis Flow (SAF) workflow
 
-This is the v1.0 user workflow. The official GUI is **SangerFlow Studio
-(PySide6/Qt)**. The Tkinter interface under `gui/` is legacy and unsupported;
-it is not a normal launch or release-validation path.
+This workflow continues the v1.0 workflow published as SangerFlow Studio. The
+official GUI is **Sanger Analysis Flow (SAF, PySide6/Qt)**. The Tkinter
+interface under `gui/` is legacy and unsupported; it is not a normal launch or
+release-validation path.
 
 ## Requirements
 

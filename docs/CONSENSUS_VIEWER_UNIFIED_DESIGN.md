@@ -8,7 +8,7 @@
 
 ## 1. Positioning
 
-SangerFlowにおける`Consensus Viewer`は、次のreview workflowの中心となる**将来の統合interface**である。
+SAFにおける`Consensus Viewer`は、次のreview workflowの中心となる**将来の統合interface**である。
 
 ```text
 AB1 -> F/R Assembly -> Consensus generation -> Human review -> Export

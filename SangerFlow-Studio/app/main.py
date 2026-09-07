@@ -1,4 +1,4 @@
-"""Executable entry point for the independent SangerFlow-Studio prototype."""
+"""Executable entry point for the SAF desktop application."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def build_application() -> tuple[QApplication, MainWindow]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Launch SangerFlow-Studio")
+    parser = argparse.ArgumentParser(description="Launch Sanger Analysis Flow (SAF)")
     parser.add_argument("--smoke-test", action="store_true")
     arguments = parser.parse_args(argv)
     application, window = build_application()

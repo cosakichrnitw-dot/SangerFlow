@@ -78,5 +78,5 @@ def classify_external_drop_paths(paths: Iterable[str | Path]) -> ExternalDropReq
         )
     suffix = next(iter(suffixes), "no extension")
     raise ExternalDropError(
-        f"Unsupported file type: {suffix}. Supported items are AB1 folders, AB1 files, FASTA files, and .sangerflow bundles."
+        f"Unsupported file type: {suffix}. Supported items are AB1 folders, AB1 files, FASTA files, and SAF Project Bundles (.sangerflow)."
     )
