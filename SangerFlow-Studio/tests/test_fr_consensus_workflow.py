@@ -30,7 +30,14 @@ from persistence.project_bundle import load_project_bundle, save_project_bundle
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QToolBar
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QToolBar,
+)
 from views.project_view import ProjectView
 from widgets.consensus_settings_dialog import ConsensusSettingsDialog
 from widgets.viewers.chromatogram_viewer import ChromatogramViewer
@@ -46,12 +53,18 @@ from widgets.viewers.consensus_decision_presentation import decision_reason_labe
 from widgets.viewers.pair_consensus_chromatogram import PairConsensusChromatogramPanel
 
 
-def _read(filename: str, sequence: str) -> SangerRead:
+def _read(
+    filename: str,
+    sequence: str,
+    *,
+    quality: list[int] | None = None,
+) -> SangerRead:
     trace_length = max(20, len(sequence) * 4)
+    quality_values = list(quality) if quality is not None else [30] * len(sequence)
     return SangerRead(
         filename=filename,
         sequence=sequence,
-        quality=[30] * len(sequence),
+        quality=quality_values,
         traces={
             "A": [0] * trace_length,
             "C": [0] * trace_length,
@@ -62,7 +75,7 @@ def _read(filename: str, sequence: str) -> SangerRead:
         trim_start=0,
         trim_end=len(sequence),
         trimmed_sequence=sequence,
-        trimmed_quality=[30] * len(sequence),
+        trimmed_quality=quality_values,
         trimmed_base_positions=list(range(len(sequence))),
         trimmed_traces={
             "A": [0] * trace_length,
@@ -447,10 +460,10 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         self.assertEqual(reverse_only._pair_chromatogram.selected_column, reverse_gap)
 
     def test_previous_next_conflict_syncs_grid_detail_and_pair_chromatograms(self) -> None:
-        reads = (_read("IK345_F.ab1", "AAAA"), _read("IK345_R.ab1", "TTCT"))
+        reads = (_read("IK345_F.ab1", "ACGTAC"), _read("IK345_R.ab1", "GAACAT"))
         single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
 
-        self.assertEqual(single.conflict_positions, (1,))
+        self.assertEqual(single.conflict_positions, (1, 4))
         self.assertTrue(single.next_conflict())
         self.assertEqual(single.selected_position, 1)
         self.assertEqual(single._grid.selection.active_column, 1)
@@ -459,8 +472,75 @@ class FRConsensusWorkflowTests(unittest.TestCase):
             "Automatic reason: Forward and reverse reads disagree without enough evidence to choose one base",
             single._detail_label.text(),
         )
+        self.assertTrue(single.next_conflict())
+        self.assertEqual(single.selected_position, 4)
+        self.assertEqual(single._pair_chromatogram.selected_column, 4)
         self.assertTrue(single.previous_conflict())
         self.assertEqual(single.selected_position, 1)
+        self.assertTrue(single.previous_conflict())
+        self.assertEqual(single.selected_position, 4)
+
+    def test_previous_next_low_quality_syncs_grid_and_pair_chromatograms(self) -> None:
+        reads = (
+            _read(
+                "IK345_F.ab1",
+                "ACGTACGT",
+                quality=[2, 2, 30, 30, 30, 30, 2, 2],
+            ),
+            _read("IK345_R.ab1", "GTAC", quality=[30, 30, 30, 30]),
+        )
+        single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
+        original_output = single.create_reviewed_consensus()
+
+        self.assertEqual(single.low_quality_positions, (0, 1, 6, 7))
+        self.assertTrue(single.next_low_quality())
+        self.assertEqual(single.selected_position, 1)
+        self.assertEqual(single._grid.selection.active_column, 1)
+        self.assertEqual(single._pair_chromatogram.selected_column, 1)
+        self.assertIn("Available evidence is too low quality", single._detail_label.text())
+        self.assertTrue(single.previous_low_quality())
+        self.assertEqual(single.selected_position, 0)
+        single.select_position(7)
+        self.assertTrue(single.next_low_quality())
+        self.assertEqual(single.selected_position, 0)
+        self.assertTrue(single.previous_low_quality())
+        self.assertEqual(single.selected_position, 7)
+
+        self.assertEqual(single.reviewed_consensus, single.original_consensus)
+        self.assertFalse(single.has_pending_scientific_changes)
+        output_after_navigation = single.create_reviewed_consensus()
+        self.assertEqual(output_after_navigation.original_sequence, original_output.original_sequence)
+        self.assertEqual(output_after_navigation.reviewed_sequence, original_output.reviewed_sequence)
+
+    def test_issue_navigation_no_match_is_disabled_and_non_mutating(self) -> None:
+        reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
+        single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
+        messages = []
+        single.status_message_changed.connect(messages.append)
+        actions = {
+            action.action_id: action
+            for action in single.action_providers[0].actions_for(single)
+        }
+
+        self.assertEqual(single.conflict_positions, ())
+        self.assertEqual(single.low_quality_positions, ())
+        self.assertFalse(actions["single_consensus.previous_conflict"].enabled)
+        self.assertFalse(actions["single_consensus.next_conflict"].enabled)
+        self.assertFalse(actions["single_consensus.previous_low_quality"].enabled)
+        self.assertFalse(actions["single_consensus.next_low_quality"].enabled)
+        buttons = {button.text(): button for button in single.findChildren(QPushButton)}
+        self.assertFalse(buttons["Previous Conflict"].isEnabled())
+        self.assertFalse(buttons["Next Conflict"].isEnabled())
+        self.assertFalse(buttons["Previous Low Quality"].isEnabled())
+        self.assertFalse(buttons["Next Low Quality"].isEnabled())
+        self.assertFalse(single.next_conflict())
+        self.assertFalse(single.previous_conflict())
+        self.assertFalse(single.next_low_quality())
+        self.assertFalse(single.previous_low_quality())
+        self.assertEqual(single.selected_position, 0)
+        self.assertEqual(single.reviewed_consensus, single.original_consensus)
+        self.assertIn("This F/R pair has no conflict columns.", messages)
+        self.assertIn("This F/R pair has no low-quality consensus columns.", messages)
 
     def test_single_review_trace_jump_returns_to_chromatogram_viewer(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
