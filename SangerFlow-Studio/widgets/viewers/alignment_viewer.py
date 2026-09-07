@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton, QVBoxLayout
 
-from core.alignment_dataset import AlignmentDataset, AlignmentRecord
+from core.alignment_dataset import AlignmentDataset, AlignmentRecord, MarkerRegion
 from core.project import RevisionState
 from core.alignment_mapper import alignment_to_trace_positions
 from core.models import SangerRead
@@ -32,7 +32,14 @@ from widgets.alignment_edit_operations import (
     DeleteColumnsOperation,
     DeleteRowsOperation,
     ExcludeColumnsOperation,
+    MarkerRegionsOperation,
     RenameOperation,
+)
+from widgets.marker_regions_dialog import (
+    MarkerRegionEditDialog,
+    MarkerRegionsDialog,
+    marker_regions_overlap,
+    validate_marker_regions,
 )
 from widgets.viewers.alignment_chromatogram_viewer import AlignmentChromatogramViewer
 from widgets.viewers.base_viewer import BaseViewer
@@ -72,6 +79,7 @@ class AlignmentViewer(BaseViewer):
         self._hidden_row_ids: set[str] = set()
         self._deleted_row_ids: set[str] = set()
         self._excluded_column_ids = set(int(column) for column in alignment_dataset.metadata.get("excluded_columns", ()))
+        self._marker_regions = tuple(alignment_dataset.marker_regions)
         self._undo_stack: list[object] = []
         self._redo_stack: list[object] = []
         self._selected_cell: tuple[str, int] | None = None
@@ -110,6 +118,12 @@ class AlignmentViewer(BaseViewer):
     @property
     def pending_deleted_column_ids(self) -> frozenset[int]:
         return frozenset(self._deleted_column_ids)
+
+    @property
+    def marker_regions(self) -> tuple[MarkerRegion, ...]:
+        """Marker regions staged in this unsaved Alignment editing session."""
+
+        return self._marker_regions
 
     @property
     def current_alignment_length(self) -> int:
@@ -159,6 +173,8 @@ class AlignmentViewer(BaseViewer):
             "alignment.set_selection_c",
             "alignment.set_selection_g",
             "alignment.set_selection_t",
+            "alignment.add_marker_region",
+            "alignment.manage_marker_regions",
             "alignment.save_edited_alignment",
         )
 
@@ -176,6 +192,7 @@ class AlignmentViewer(BaseViewer):
         self._hidden_row_ids.clear()
         self._deleted_row_ids.clear()
         self._excluded_column_ids = set(int(column) for column in dataset.metadata.get("excluded_columns", ()))
+        self._marker_regions = tuple(dataset.marker_regions)
         self._undo_stack.clear()
         self._redo_stack.clear()
         self.refresh()
@@ -373,6 +390,115 @@ class AlignmentViewer(BaseViewer):
         self._status.setText(self._grid.selection_status_text())
         return True
 
+    def request_add_marker_region(self) -> bool:
+        """Add a named interval from an explicit ruler-column selection."""
+
+        message = self._marker_region_editability_error()
+        if message is not None:
+            self._show_marker_region_message("Add Marker Region", message)
+            return False
+        if self._grid.selection.mode != "column":
+            message = "Select one or more contiguous alignment columns from the ruler first."
+            self._show_marker_region_message("Add Marker Region", message)
+            return False
+        columns = tuple(sorted(set(self._grid.selected_columns())))
+        if not columns or columns != tuple(range(columns[0], columns[-1] + 1)):
+            message = "Select one contiguous alignment-column range from the ruler first."
+            self._show_marker_region_message("Add Marker Region", message)
+            return False
+        dialog = MarkerRegionEditDialog(
+            alignment_length=self.current_alignment_length,
+            existing_regions=self._marker_regions,
+            initial=MarkerRegion("New region", columns[0] + 1, columns[-1] + 1),
+            parent=self,
+        )
+        dialog.name_edit.clear()
+        dialog.name_edit.setPlaceholderText("e.g., COI")
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        try:
+            return self.add_marker_region(dialog.marker_region())
+        except ValueError as error:
+            self._show_marker_region_message("Add Marker Region", str(error))
+            return False
+
+    def add_marker_region(
+        self,
+        region: MarkerRegion | str,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> bool:
+        """Stage a new named 1-based inclusive alignment interval."""
+
+        if isinstance(region, MarkerRegion):
+            candidate = region
+        else:
+            if start is None or end is None:
+                raise ValueError("marker region start and end are required")
+            candidate = MarkerRegion(str(region).strip(), int(start), int(end))
+        return self._replace_marker_regions(self._marker_regions + (candidate,))
+
+    def request_manage_marker_regions(self) -> bool:
+        """View, edit, or delete regions staged in the current working copy."""
+
+        message = self._marker_region_editability_error()
+        if message is not None:
+            self._show_marker_region_message("Manage Marker Regions", message)
+            return False
+        dialog = MarkerRegionsDialog(
+            self._marker_regions,
+            alignment_length=self.current_alignment_length,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        try:
+            return self._replace_marker_regions(dialog.regions)
+        except ValueError as error:
+            self._show_marker_region_message("Manage Marker Regions", str(error))
+            return False
+
+    def replace_marker_regions(self, regions: tuple[MarkerRegion, ...]) -> bool:
+        """Public, testable entry point for one undoable region-list edit."""
+
+        return self._replace_marker_regions(regions)
+
+    def _replace_marker_regions(self, regions: tuple[MarkerRegion, ...]) -> bool:
+        message = self._marker_region_editability_error()
+        if message is not None:
+            raise ValueError(message)
+        validated = validate_marker_regions(regions, self.current_alignment_length)
+        before = self._marker_regions
+        if before == validated:
+            return False
+        operation = MarkerRegionsOperation(before, validated)
+        operation.apply(self)
+        self._undo_stack.append(operation)
+        self._redo_stack.clear()
+        self.refresh()
+        if marker_regions_overlap(validated):
+            self._status.setText(
+                "Marker regions updated. Warning: overlapping regions cannot be exported as partition definitions."
+            )
+        else:
+            self._status.setText(f"Marker regions updated ({len(validated)} total).")
+        return True
+
+    def _marker_region_editability_error(self) -> str | None:
+        message = self._alignment_editability_error()
+        if message is not None:
+            return message
+        if self._deleted_column_ids:
+            return (
+                "Marker regions cannot be changed while columns are pending deletion. "
+                "Save the edited Alignment revision and recreate regions using its new column coordinates."
+            )
+        return None
+
+    def _show_marker_region_message(self, title: str, message: str) -> None:
+        self.status_message_changed.emit(message)
+        QMessageBox.warning(self, title, message)
+
     def delete_selected_columns(self, *, confirm: bool = False) -> bool:
         """Stage structural deletion using stable original column IDs."""
 
@@ -387,11 +513,19 @@ class AlignmentViewer(BaseViewer):
         if not column_ids or len(column_ids) >= self.current_alignment_length:
             return False
         if confirm:
+            marker_notice = ""
+            if self._marker_regions:
+                marker_notice = (
+                    "\n\nThis Alignment has marker regions. Deleting columns invalidates "
+                    "their alignment-column coordinates, so they will be cleared in the next "
+                    "saved revision. Undo restores both the columns and marker regions."
+                )
             answer = QMessageBox.question(
                 self,
                 "Delete Selected Columns",
                 f"Delete {len(column_ids)} column(s) from the next saved Alignment revision?\n"
-                "The source AlignmentDataset is not modified.",
+                "The source AlignmentDataset is not modified."
+                f"{marker_notice}",
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return False
@@ -399,7 +533,12 @@ class AlignmentViewer(BaseViewer):
             record_id: tuple(self._edited_sequences[record_id][index] for index in columns)
             for record_id in self._edited_sequences
         }
-        operation = DeleteColumnsOperation(column_ids, removed)
+        operation = DeleteColumnsOperation(
+            column_ids,
+            removed,
+            marker_regions_before=self._marker_regions if self._marker_regions else None,
+            marker_regions_after=() if self._marker_regions else None,
+        )
         operation.apply(self)
         self._undo_stack.append(operation)
         self._redo_stack.clear()
@@ -894,7 +1033,7 @@ class AlignmentViewer(BaseViewer):
             name=name,
             parent_dataset_id=self._dataset.parent_dataset_id,
             records=records,
-            marker_regions=() if self._deleted_column_ids else self._dataset.marker_regions,
+            marker_regions=() if self._deleted_column_ids else self._marker_regions,
             metadata={
                 **dict(self._dataset.metadata),
                 "source_alignment_id": self._dataset.alignment_id,
@@ -1027,6 +1166,10 @@ class AlignmentViewer(BaseViewer):
         if self._deleted_column_ids:
             count = len(self._deleted_column_ids)
             summary.insert(1, f"Unsaved changes • {count} column{'s' if count != 1 else ''} deleted")
+        if self._marker_regions:
+            summary.append(f"Marker regions: {len(self._marker_regions)}")
+            if marker_regions_overlap(self._marker_regions):
+                summary.append("Marker regions overlap • partition export unavailable")
         if self._undo_stack and not self._deleted_row_ids and not self._deleted_column_ids:
             summary.insert(1, "Unsaved scientific changes")
         if self._hidden_row_ids:
@@ -1034,6 +1177,15 @@ class AlignmentViewer(BaseViewer):
         if self._excluded_column_ids:
             summary.append(f"{len(self._excluded_column_ids)} excluded (retained)")
         self._summary.setText("    •    ".join(summary))
+        marker_details = "; ".join(
+            f"{region.name} {region.start}–{region.end}"
+            for region in self._marker_regions
+        )
+        self._summary.setToolTip(
+            f"Marker regions: {marker_details}"
+            if marker_details
+            else "No marker regions are defined for this Alignment working copy."
+        )
         self._manual_edit_legend.setVisible(bool(self._edited_cells()))
         self._save_revision_button.setEnabled(
             self.is_dirty and self._alignment_editability_error() is None
@@ -1112,6 +1264,13 @@ class AlignmentViewer(BaseViewer):
             review = menu.addAction(studio_icon("evidence"), "Review Alignment Chromatograms")
             review.triggered.connect(self.review_chromatograms)
         elif mode == "column":
+            add_marker = menu.addAction("Add Marker Region…")
+            add_marker.setEnabled(self._marker_region_editability_error() is None)
+            add_marker.triggered.connect(self.request_add_marker_region)
+            manage_markers = menu.addAction("Manage Marker Regions…")
+            manage_markers.setEnabled(self._marker_region_editability_error() is None)
+            manage_markers.triggered.connect(self.request_manage_marker_regions)
+            menu.addSeparator()
             exclude = menu.addAction(studio_icon("hide"), "Exclude Selected Column(s)")
             exclude.setEnabled(self._alignment_editability_error() is None)
             exclude.triggered.connect(self.exclude_selected_columns)
@@ -1309,6 +1468,9 @@ class AlignmentViewer(BaseViewer):
     def _set_row_label(self, record_id: str, label: str) -> None:
         self._record_labels[record_id] = label
 
+    def _set_marker_regions(self, regions: tuple[MarkerRegion, ...]) -> None:
+        self._marker_regions = tuple(regions)
+
     def _apply_delete_columns(self, column_ids: tuple[int, ...]) -> None:
         indices = sorted((self._column_ids.index(column_id) for column_id in column_ids if column_id in self._column_ids), reverse=True)
         for index in indices:
@@ -1465,6 +1627,14 @@ class AlignmentViewerActionProvider:
                 toolbar=True,
                 menu_group="Identify",
                 priority=70,
+            ),
+            ViewerAction(
+                action_id="alignment.manage_marker_regions",
+                label="Manage Marker Regions…",
+                tooltip="View, edit, or delete named alignment-column regions",
+                callback=getattr(viewer, "request_manage_marker_regions"),
+                enabled=getattr(viewer, "_marker_region_editability_error")() is None,
+                menu_group="Align",
             ),
             ViewerAction(
                 action_id="alignment.exclude_columns",
