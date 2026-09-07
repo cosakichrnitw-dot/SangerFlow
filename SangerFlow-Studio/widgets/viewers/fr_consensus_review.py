@@ -651,7 +651,7 @@ class ConsensusReviewManagerViewer(BaseViewer):
         source_id = getattr(source_dataset, "dataset_id", None)
         super().__init__(
             viewer_id=f"fr-consensus-manager-{source_id or id(self)}",
-            viewer_title="Consensus Samples",
+            viewer_title="Pairing Dashboard",
             viewer_kind="consensus-review-manager",
             source_object_id=source_id,
         )
@@ -748,7 +748,7 @@ class ConsensusReviewManagerViewer(BaseViewer):
         self._included_single_directions.pop(row.sample_id, None)
         self._included_single_reads.pop(row.sample_id, None)
         self._output_excluded_sample_ids.discard(row.sample_id)
-        self._populate_table()
+        self._refresh_dashboard()
         self.status_message_changed.emit(f"Manual F/R pair selected: {row.sample_id}. Review is required.")
         return resolved
 
@@ -767,23 +767,40 @@ class ConsensusReviewManagerViewer(BaseViewer):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        ready_count = len(self.ready_rows)
-        layout.addWidget(
-            QLabel(
-                f"Consensus Samples — Ready: {ready_count}/{len(self._rows)}"
-            )
-        )
+        layout.addWidget(QLabel("Pairing Dashboard — current Consensus Manager session"))
+        self._summary_label = QLabel()
+        self._summary_label.setObjectName("pairingDashboardSummary")
+        self._summary_label.setWordWrap(True)
+        layout.addWidget(self._summary_label)
+        filters = QHBoxLayout()
+        filters.addWidget(QLabel("Show:"))
+        self._status_filters: dict[str, QCheckBox] = {}
+        for key, label in (
+            ("automatic", "Automatic pairs"),
+            ("forward", "F only"),
+            ("reverse", "R only"),
+            ("unknown", "Direction unknown"),
+            ("ambiguous", "Ambiguous"),
+            ("manual", "Manual / selected"),
+        ):
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self._apply_dashboard_filters)
+            self._status_filters[key] = checkbox
+            filters.addWidget(checkbox)
+        filters.addStretch(1)
+        layout.addLayout(filters)
         self._table = QTableWidget()
-        self._table.setColumnCount(8)
+        self._table.setObjectName("pairingDashboardTable")
+        self._table.setColumnCount(7)
         self._table.setHorizontalHeaderLabels(
             (
-                "Sample",
-                "Forward read",
-                "Reverse read",
+                "Sample / Group",
                 "Status",
-                "Consensus length",
-                "Conflicts",
-                "Unresolved / N",
+                "Forward candidates",
+                "Reverse candidates",
+                "Resolution",
+                "Output",
                 "Notes",
             )
         )
@@ -820,30 +837,105 @@ class ConsensusReviewManagerViewer(BaseViewer):
         footer.addWidget(self._create_output_button)
         footer.addStretch(1)
         layout.addLayout(footer)
+        self._refresh_dashboard()
+
+    def pairing_summary(self) -> dict[str, int]:
+        """Derive current-session dashboard metrics without creating pairing state."""
+
+        statuses = tuple(row.sample.pairing_status for row in self._rows)
+        output = self.output_summary()
+        return {
+            "reads": sum(len(row.sample.reads) for row in self._rows),
+            "automatic_pairs": sum(status is PairingStatus.CLEAR_PAIR for status in statuses),
+            "forward_only": sum(status is PairingStatus.ORPHAN_FORWARD for status in statuses),
+            "reverse_only": sum(status is PairingStatus.ORPHAN_REVERSE for status in statuses),
+            "direction_unknown": sum(status is PairingStatus.SINGLE_UNSPECIFIED for status in statuses),
+            "ambiguous": sum(status is PairingStatus.AMBIGUOUS for status in statuses),
+            "manual_pairs": output["manual_pairs"],
+            "reviewed": output["reviewed_consensus"],
+            "singles_selected": output["forward_singles"] + output["reverse_singles"],
+            "excluded": output["excluded"],
+            "needs_attention": output["needs_attention"],
+        }
+
+    def _refresh_dashboard(self) -> None:
+        """Refresh all presentation from core rows and existing manager overlays."""
+
+        summary = self.pairing_summary()
+        self._summary_label.setText(
+            "Reads: {reads}   Automatic pairs: {automatic_pairs}   "
+            "F only: {forward_only}   R only: {reverse_only}   "
+            "Direction unknown: {direction_unknown}   Ambiguous: {ambiguous}\n"
+            "Manual pairs: {manual_pairs}   Reviewed: {reviewed}   "
+            "Singles selected: {singles_selected}   Excluded: {excluded}   "
+            "Needs attention: {needs_attention}".format(**summary)
+        )
         self._populate_table()
 
     def _populate_table(self) -> None:
+        selected = self._selected_row()
+        selected_sample_id = selected.sample_id if selected is not None else None
         self._table.setRowCount(len(self._rows))
         for row_index, row in enumerate(self._rows):
             values = (
                 row.sample_id,
-                row.forward_filename,
-                row.reverse_filename,
-                self._display_status(row),
-                "—" if row.consensus_length is None else str(row.consensus_length),
-                "—" if row.conflict_count is None else str(row.conflict_count),
-                "—" if row.unresolved_count is None else str(row.unresolved_count),
+                self._display_core_status(row),
+                self._candidate_display(row.sample.forward_candidates),
+                self._candidate_display(row.sample.reverse_candidates),
+                self._display_resolution(row),
+                self._display_output_state(row),
                 self._display_note(row),
             )
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, row.sample_id)
+                if column_index in (2, 3):
+                    candidates = (
+                        row.sample.forward_candidates
+                        if column_index == 2
+                        else row.sample.reverse_candidates
+                    )
+                    item.setToolTip("\n".join(read.filename for read in candidates) or "No candidates")
                 self._table.setItem(row_index, column_index, item)
-        for row_index, row in enumerate(self._rows):
-            if row.is_ready:
-                self._table.selectRow(row_index)
-                break
+            self._table.setRowHidden(row_index, not self._row_matches_filters(row))
+        selected_row_index = next(
+            (
+                index
+                for index, row in enumerate(self._rows)
+                if row.sample_id == selected_sample_id and not self._table.isRowHidden(index)
+            ),
+            next(
+                (index for index in range(len(self._rows)) if not self._table.isRowHidden(index)),
+                None,
+            ),
+        )
+        if selected_row_index is not None:
+            self._table.selectRow(selected_row_index)
+        else:
+            self._table.clearSelection()
         self._update_output_controls()
+
+    def _apply_dashboard_filters(self, *_args: object) -> None:
+        self._populate_table()
+
+    def _row_matches_filters(self, row: ConsensusSampleRow) -> bool:
+        status = row.sample.pairing_status
+        selected = {
+            key for key, checkbox in self._status_filters.items() if checkbox.isChecked()
+        }
+        core_status_visible = (
+            (status is PairingStatus.CLEAR_PAIR and "automatic" in selected)
+            or (status is PairingStatus.ORPHAN_FORWARD and "forward" in selected)
+            or (status is PairingStatus.ORPHAN_REVERSE and "reverse" in selected)
+            or (status is PairingStatus.SINGLE_UNSPECIFIED and "unknown" in selected)
+            or (status is PairingStatus.AMBIGUOUS and "ambiguous" in selected)
+        )
+        # An explicit manual pair remains discoverable through the dedicated
+        # overlay filter, while selected singletons retain their core F/R
+        # classification for filtering purposes.
+        return core_status_visible or (
+            row.sample_id in self._manual_pair_rows and "manual" in selected
+        )
 
     def _selected_ready_row(self) -> ConsensusSampleRow | None:
         row = self._selected_row()
@@ -855,15 +947,55 @@ class ConsensusReviewManagerViewer(BaseViewer):
             return None
         return self._manual_pair_rows.get(row.sample_id) or (row if row.is_ready else None)
 
-    def _display_status(self, row: ConsensusSampleRow) -> str:
+    def _display_core_status(self, row: ConsensusSampleRow) -> str:
+        """Show immutable filename classification, never a manager overlay."""
+
+        status = row.sample.pairing_status
+        if status is PairingStatus.CLEAR_PAIR:
+            return "Automatic pair"
+        if status is PairingStatus.ORPHAN_FORWARD:
+            return "Forward only"
+        if status is PairingStatus.ORPHAN_REVERSE:
+            return "Reverse only"
+        if status is PairingStatus.SINGLE_UNSPECIFIED:
+            return "Direction unknown"
+        return "Ambiguous"
+
+    @staticmethod
+    def _candidate_display(candidates: tuple[object, ...]) -> str:
+        names = tuple(str(getattr(read, "filename", "—")) for read in candidates)
+        if not names:
+            return "—"
+        if len(names) == 1:
+            return names[0]
+        shown = ", ".join(names[:2])
+        suffix = f" +{len(names) - 2} more" if len(names) > 2 else ""
+        return f"{len(names)} candidates: {shown}{suffix}"
+
+    def _display_resolution(self, row: ConsensusSampleRow) -> str:
         if row.sample_id in self._output_excluded_sample_ids:
             return "Excluded"
         if row.sample_id in self._manual_pair_rows:
-            return "Resolved Pair — review required"
+            return "Manual pair"
+        direction = self._included_single_directions.get(row.sample_id)
+        if direction is not None:
+            return f"{direction.title()} single"
+        if row.sample.pairing_status is PairingStatus.CLEAR_PAIR:
+            return "Auto"
+        return "—"
+
+    def _display_output_state(self, row: ConsensusSampleRow) -> str:
+        if row.sample_id in self._output_excluded_sample_ids:
+            return "Excluded"
+        if row.sample_id in self._reviewed_pair_records:
+            return "Reviewed consensus"
         if row.sample_id in self._included_single_directions:
-            direction = self._included_single_directions[row.sample_id].title()
-            return f"Resolved as {direction} Single"
-        return row.status
+            return "Single selected"
+        if row.sample_id in self._manual_pair_rows or row.is_ready:
+            return "Needs review"
+        if self._row_needs_attention(row):
+            return "Needs attention"
+        return "Not selected"
 
     def _display_note(self, row: ConsensusSampleRow) -> str:
         if row.sample_id in self._manual_pair_rows:
@@ -907,6 +1039,7 @@ class ConsensusReviewManagerViewer(BaseViewer):
             raise ValueError("only a resolved F/R pair can become a reviewed output candidate")
         self._reviewed_pair_records[sample_id] = record
         self._output_excluded_sample_ids.discard(sample_id)
+        self._refresh_dashboard()
         self.status_message_changed.emit(f"Reviewed pair ready for output: {sample_id}")
 
     def include_selected_as_forward_single(self) -> bool:
@@ -925,6 +1058,7 @@ class ConsensusReviewManagerViewer(BaseViewer):
         self._included_single_directions[row.sample_id] = direction
         self._included_single_reads.pop(row.sample_id, None)
         self._output_excluded_sample_ids.discard(row.sample_id)
+        self._refresh_dashboard()
         self.status_message_changed.emit(
             f"Included as {direction.title()} single: {row.sample_id}"
         )
@@ -945,7 +1079,7 @@ class ConsensusReviewManagerViewer(BaseViewer):
         self._included_single_directions[row.sample_id] = direction
         self._included_single_reads[row.sample_id] = (direction, read)
         self._output_excluded_sample_ids.discard(row.sample_id)
-        self._populate_table()
+        self._refresh_dashboard()
         self.status_message_changed.emit(f"Included selected candidate as {direction.title()} single: {row.sample_id}")
         return True
 
@@ -958,6 +1092,7 @@ class ConsensusReviewManagerViewer(BaseViewer):
         self._manual_pair_rows.pop(row.sample_id, None)
         self._reviewed_pair_records.pop(row.sample_id, None)
         self._output_excluded_sample_ids.add(row.sample_id)
+        self._refresh_dashboard()
         self.status_message_changed.emit(f"Excluded from output: {row.sample_id}")
         return True
 

@@ -641,6 +641,120 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         self.assertEqual(conflict_table.rowCount(), 0)
         self.assertEqual(conflict.reviewed_consensus, conflict.original_consensus)
 
+    def test_pairing_dashboard_summary_and_candidate_display_use_existing_state(self) -> None:
+        reads = (
+            _read("Pair_F.ab1", "ATGC"),
+            _read("Pair_R.ab1", "GCAT"),
+            _read("Forward_F.ab1", "ATGC"),
+            _read("Reverse_R.ab1", "GCAT"),
+            _read("Unknown.ab1", "ATGC"),
+            _read("Ambiguous_F.ab1", "ATGC"),
+            _read("Ambiguous_Forward.ab1", "ATGT"),
+            _read("Ambiguous_R.ab1", "GCAT"),
+        )
+        manager = ConsensusReviewManagerViewer(build_consensus_sample_rows(reads))
+
+        self.assertEqual(
+            manager.pairing_summary(),
+            {
+                "reads": 8,
+                "automatic_pairs": 1,
+                "forward_only": 1,
+                "reverse_only": 1,
+                "direction_unknown": 1,
+                "ambiguous": 1,
+                "manual_pairs": 0,
+                "reviewed": 0,
+                "singles_selected": 0,
+                "excluded": 0,
+                "needs_attention": 2,
+            },
+        )
+        summary = manager.findChild(QLabel, "pairingDashboardSummary")
+        self.assertIn("Reads: 8", summary.text())
+        self.assertIn("Automatic pairs: 1", summary.text())
+
+        ambiguous_index = next(
+            index for index, row in enumerate(manager.rows) if row.sample_id == "Ambiguous"
+        )
+        self.assertEqual(manager._table.item(ambiguous_index, 1).text(), "Ambiguous")
+        self.assertIn("2 candidates", manager._table.item(ambiguous_index, 2).text())
+        self.assertEqual(manager._table.item(ambiguous_index, 4).text(), "—")
+        self.assertEqual(manager._table.item(ambiguous_index, 5).text(), "Needs attention")
+
+    def test_pairing_dashboard_keeps_core_status_distinct_from_manual_resolution(self) -> None:
+        reads = (
+            _read("Sample_F.ab1", "ATGC"),
+            _read("Sample_Forward.ab1", "ATGT"),
+            _read("Sample_R.ab1", "GCAT"),
+        )
+        dataset = _dataset(reads)
+        rows = build_consensus_sample_rows(reads, source_dataset=dataset)
+        manager = ConsensusReviewManagerViewer(rows, source_dataset=dataset)
+
+        resolved = manager.resolve_ambiguous_pair(rows[0], reads[1], reads[2])
+        self.assertEqual(rows[0].sample.pairing_status.name, "AMBIGUOUS")
+        self.assertEqual(resolved.pairing_resolution, "MANUAL")
+        self.assertEqual(manager.pairing_summary()["manual_pairs"], 1)
+        self.assertEqual(manager._table.item(0, 1).text(), "Ambiguous")
+        self.assertEqual(manager._table.item(0, 4).text(), "Manual pair")
+        self.assertEqual(manager._table.item(0, 5).text(), "Needs review")
+
+    def test_pairing_dashboard_refreshes_singleton_exclusion_and_display_filters(self) -> None:
+        reads = (
+            _read("Pair_F.ab1", "ATGC"),
+            _read("Pair_R.ab1", "GCAT"),
+            _read("Forward_F.ab1", "AAGC"),
+        )
+        dataset = _dataset(reads)
+        manager = ConsensusReviewManagerViewer(
+            build_consensus_sample_rows(reads, source_dataset=dataset),
+            source_dataset=dataset,
+        )
+        forward_index = next(
+            index for index, row in enumerate(manager.rows) if row.sample_id == "Forward"
+        )
+        pair_index = next(index for index, row in enumerate(manager.rows) if row.sample_id == "Pair")
+        manager._table.selectRow(forward_index)
+        self.assertTrue(manager.include_selected_as_forward_single())
+        self.assertEqual(manager.pairing_summary()["singles_selected"], 1)
+        self.assertEqual(manager._table.item(forward_index, 4).text(), "Forward single")
+        self.assertEqual(manager._table.item(forward_index, 5).text(), "Single selected")
+
+        forward_filter = next(
+            checkbox
+            for checkbox in manager.findChildren(QCheckBox)
+            if checkbox.text() == "F only"
+        )
+        forward_filter.setChecked(False)
+        self.application.processEvents()
+        self.assertTrue(manager._table.isRowHidden(forward_index))
+        self.assertEqual(manager.included_single_directions, {"Forward": "FORWARD"})
+        manager._table.selectRow(pair_index)
+        self.assertEqual(manager._selected_row().sample_id, "Pair")
+
+        self.assertTrue(manager.exclude_selected_from_output())
+        self.assertEqual(manager.pairing_summary()["excluded"], 1)
+        self.assertEqual(manager._table.item(pair_index, 4).text(), "Excluded")
+        self.assertEqual(manager._table.item(pair_index, 5).text(), "Excluded")
+        self.assertEqual(tuple(record.sequence for record in dataset.records), ("ATGC", "GCAT", "AAGC"))
+
+    def test_pairing_dashboard_handles_a_large_batch_without_chromatogram_panels(self) -> None:
+        reads = tuple(
+            read
+            for index in range(100)
+            for read in (
+                _read(f"Batch{index:03d}_F.ab1", "ATGC"),
+                _read(f"Batch{index:03d}_R.ab1", "GCAT"),
+            )
+        )
+        manager = ConsensusReviewManagerViewer(build_consensus_sample_rows(reads))
+
+        self.assertEqual(manager.pairing_summary()["reads"], 200)
+        self.assertEqual(manager.pairing_summary()["automatic_pairs"], 100)
+        self.assertEqual(manager._table.rowCount(), 100)
+        self.assertFalse(manager.findChildren(PairConsensusChromatogramPanel))
+
     def test_single_review_trace_jump_returns_to_chromatogram_viewer(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
         dataset = _dataset(reads)
