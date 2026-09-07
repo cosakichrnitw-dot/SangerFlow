@@ -32,10 +32,12 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QLabel,
     QMessageBox,
     QPushButton,
+    QTableWidget,
     QToolBar,
 )
 from views.project_view import ProjectView
@@ -541,6 +543,103 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         self.assertEqual(single.reviewed_consensus, single.original_consensus)
         self.assertIn("This F/R pair has no conflict columns.", messages)
         self.assertIn("This F/R pair has no low-quality consensus columns.", messages)
+
+    def test_issue_table_exposes_existing_conflict_evidence_and_selects_position(self) -> None:
+        reads = (_read("IK345_F.ab1", "ACGTAC"), _read("IK345_R.ab1", "GAACAT"))
+        single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
+
+        rows = single.issue_rows
+        self.assertEqual(tuple(row.position for row in rows), (1, 4))
+        self.assertTrue(all(row.issues == ("Conflict",) for row in rows))
+        self.assertTrue(all(row.forward.startswith(("A", "C", "G", "T")) for row in rows))
+        self.assertTrue(all(row.reverse.startswith(("A", "C", "G", "T")) for row in rows))
+        self.assertEqual(rows[0].automatic, "N")
+
+        single._issues_button.setChecked(True)
+        table = single.findChild(QTableWidget, "singleConsensusIssueTable")
+        self.assertIsNotNone(table)
+        table.selectRow(1)
+        self.application.processEvents()
+        self.assertEqual(single.selected_position, 4)
+        self.assertEqual(single._grid.selection.active_column, 4)
+        self.assertEqual(single._pair_chromatogram.selected_column, 4)
+
+    def test_issue_table_uses_existing_low_quality_and_one_sided_reasons(self) -> None:
+        low_quality = SingleConsensusReviewViewer(
+            build_consensus_sample_rows(
+                (
+                    _read("IK345_F.ab1", "ACGTACGT", quality=[2, 2, 30, 30, 30, 30, 2, 2]),
+                    _read("IK345_R.ab1", "GTAC", quality=[30, 30, 30, 30]),
+                )
+            )[0]
+        )
+        self.assertEqual(
+            tuple(row.position for row in low_quality.issue_rows if "Low Quality" in row.issues),
+            (0, 1, 6, 7),
+        )
+
+        one_sided = SingleConsensusReviewViewer(
+            build_consensus_sample_rows(
+                (_read("F_F.ab1", "AAAAAA"), _read("F_R.ab1", "TTTT"))
+            )[0]
+        )
+        rows = tuple(row for row in one_sided.issue_rows if "One-sided" in row.issues)
+        self.assertTrue(rows)
+        self.assertTrue(any(row.reverse == "—" for row in rows))
+
+    def test_issue_table_manual_edit_refreshes_without_changing_automatic_tags(self) -> None:
+        reads = (_read("IK345_F.ab1", "ACGTAC"), _read("IK345_R.ab1", "GAACAT"))
+        single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
+        original_output = single.create_reviewed_consensus()
+
+        self.assertTrue(single.set_base(1, "A"))
+        edited = next(row for row in single.issue_rows if row.position == 1)
+        self.assertEqual(edited.issues, ("Conflict", "Manual edit"))
+        self.assertEqual(edited.automatic, "N")
+        self.assertEqual(edited.reviewed, "A")
+
+        self.assertTrue(single.undo())
+        restored = next(row for row in single.issue_rows if row.position == 1)
+        self.assertEqual(restored.issues, ("Conflict",))
+        self.assertTrue(single.redo())
+        redone = next(row for row in single.issue_rows if row.position == 1)
+        self.assertEqual(redone.issues, ("Conflict", "Manual edit"))
+
+        # Table presentation does not mutate production consensus output.
+        self.assertEqual(original_output.original_sequence, single.original_consensus)
+
+    def test_issue_table_empty_state_and_filters_are_display_only(self) -> None:
+        reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
+        single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
+        original = single.create_reviewed_consensus()
+
+        self.assertEqual(single.issue_rows, ())
+        single._issues_button.setChecked(True)
+        table = single.findChild(QTableWidget, "singleConsensusIssueTable")
+        self.assertIsNotNone(table)
+        self.assertEqual(table.rowCount(), 0)
+        self.assertFalse(table.isVisible())
+        self.assertEqual(single.reviewed_consensus, single.original_consensus)
+        output = single.create_reviewed_consensus()
+        self.assertEqual(output.original_sequence, original.original_sequence)
+        self.assertEqual(output.reviewed_sequence, original.reviewed_sequence)
+
+        conflict = SingleConsensusReviewViewer(
+            build_consensus_sample_rows(
+                (_read("IK345_F.ab1", "ACGTAC"), _read("IK345_R.ab1", "GAACAT"))
+            )[0]
+        )
+        conflict._issues_button.setChecked(True)
+        conflict_table = conflict.findChild(QTableWidget, "singleConsensusIssueTable")
+        conflict_filter = next(
+            checkbox
+            for checkbox in conflict.findChildren(QCheckBox)
+            if checkbox.text() == "Conflict"
+        )
+        conflict_filter.setChecked(False)
+        self.application.processEvents()
+        self.assertEqual(conflict_table.rowCount(), 0)
+        self.assertEqual(conflict.reviewed_consensus, conflict.original_consensus)
 
     def test_single_review_trace_jump_returns_to_chromatogram_viewer(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))

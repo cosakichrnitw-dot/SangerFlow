@@ -78,6 +78,135 @@ from widgets.viewers.viewer_actions import ViewerAction
 _SUPPORTED_REVIEW_BASES = ("A", "C", "G", "T", "N", "-")
 
 
+@dataclass(frozen=True)
+class _ConsensusIssueRow:
+    """Read-only presentation of existing evidence for one review position."""
+
+    position: int
+    issues: tuple[str, ...]
+    forward: str
+    reverse: str
+    automatic: str
+    reviewed: str
+    decision: str
+    source: str
+
+
+class _SingleConsensusIssuePanel(QWidget):
+    """Compact, filterable view over a Single Consensus Reviewer's evidence."""
+
+    _FILTERS = ("Conflict", "Low Quality", "One-sided", "Manual edit")
+
+    def __init__(self, select_position, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._select_position = select_position
+        self._rows: tuple[_ConsensusIssueRow, ...] = ()
+        self._syncing_selection = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        filters = QHBoxLayout()
+        filters.addWidget(QLabel("Show:"))
+        self._filters: dict[str, QCheckBox] = {}
+        for label in self._FILTERS:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self._rebuild_table)
+            self._filters[label] = checkbox
+            filters.addWidget(checkbox)
+        filters.addStretch(1)
+        layout.addLayout(filters)
+
+        self._empty_label = QLabel("No review issues or manual edits.")
+        self._empty_label.setObjectName("singleConsensusIssueEmptyState")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._empty_label)
+
+        self._table = QTableWidget()
+        self._table.setObjectName("singleConsensusIssueTable")
+        self._table.setColumnCount(8)
+        self._table.setHorizontalHeaderLabels(
+            ("Position", "Issue", "F", "R", "Automatic", "Reviewed", "Decision", "Source")
+        )
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._table.verticalHeader().setVisible(False)
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.itemSelectionChanged.connect(self._table_selection_changed)
+        layout.addWidget(self._table)
+        self.setMinimumHeight(150)
+        self.setMaximumHeight(240)
+
+    @property
+    def rows(self) -> tuple[_ConsensusIssueRow, ...]:
+        """All unfiltered rows, retained only as current presentation state."""
+
+        return self._rows
+
+    def set_rows(self, rows: tuple[_ConsensusIssueRow, ...]) -> None:
+        self._rows = rows
+        self._rebuild_table()
+
+    def sync_position(self, position: int) -> None:
+        """Highlight a visible table row without initiating another selection."""
+
+        for row_index in range(self._table.rowCount()):
+            item = self._table.item(row_index, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == position:
+                self._syncing_selection = True
+                try:
+                    self._table.selectRow(row_index)
+                finally:
+                    self._syncing_selection = False
+                return
+
+    def _visible_rows(self) -> tuple[_ConsensusIssueRow, ...]:
+        enabled = {
+            label
+            for label, checkbox in self._filters.items()
+            if checkbox.isChecked()
+        }
+        return tuple(row for row in self._rows if any(tag in enabled for tag in row.issues))
+
+    def _rebuild_table(self, *_args) -> None:
+        visible_rows = self._visible_rows()
+        self._syncing_selection = True
+        try:
+            self._table.clearContents()
+            self._table.setRowCount(len(visible_rows))
+            for row_index, row in enumerate(visible_rows):
+                values = (
+                    str(row.position + 1),
+                    "; ".join(row.issues),
+                    row.forward,
+                    row.reverse,
+                    row.automatic,
+                    row.reviewed,
+                    row.decision,
+                    row.source,
+                )
+                for column_index, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setData(Qt.ItemDataRole.UserRole, row.position)
+                    self._table.setItem(row_index, column_index, item)
+        finally:
+            self._syncing_selection = False
+        self._empty_label.setVisible(not visible_rows)
+        self._table.setVisible(bool(visible_rows))
+
+    def _table_selection_changed(self) -> None:
+        if self._syncing_selection:
+            return
+        selected = self._table.selectedItems()
+        if not selected:
+            return
+        position = selected[0].data(Qt.ItemDataRole.UserRole)
+        if isinstance(position, int):
+            self._select_position(position)
+
+
 def _is_conflict_column(column: object) -> bool:
     """Return whether existing consensus evidence marks a review conflict.
 
@@ -1058,6 +1187,50 @@ class SingleConsensusReviewViewer(BaseViewer):
     def selected_evidence(self):
         return self._view_model.columns[self._selected_position].review_evidence
 
+    @property
+    def issue_rows(self) -> tuple[_ConsensusIssueRow, ...]:
+        """Derive the current read-only issue-table rows from existing state."""
+
+        rows = []
+        one_sided_reasons = {
+            ConsensusV21DecisionReason.ONE_SIDED_FORWARD.value,
+            ConsensusV21DecisionReason.ONE_SIDED_REVERSE.value,
+        }
+        for position, column in enumerate(self._view_model.columns):
+            evidence = column.review_evidence
+            reason = str(getattr(evidence, "decision_reason", ""))
+            issues = []
+            if _is_conflict_column(column):
+                issues.append("Conflict")
+            if _is_low_quality_column(column):
+                issues.append("Low Quality")
+            if reason in one_sided_reasons:
+                issues.append("One-sided")
+            reviewed = self._reviewed_bases[position]
+            if reviewed != evidence.consensus_base:
+                issues.append("Manual edit")
+            if not issues:
+                continue
+            rows.append(
+                _ConsensusIssueRow(
+                    position=position,
+                    issues=tuple(issues),
+                    forward=_format_evidence_side(
+                        evidence.forward_base,
+                        evidence.forward_quality,
+                    ),
+                    reverse=_format_evidence_side(
+                        evidence.reverse_base,
+                        evidence.reverse_quality,
+                    ),
+                    automatic=evidence.consensus_base,
+                    reviewed=reviewed,
+                    decision=decision_reason_label(reason),
+                    source=decision_source_label(column.selected_source),
+                )
+            )
+        return tuple(rows)
+
     def select_position(self, position: int) -> None:
         if not 0 <= int(position) < len(self._view_model.columns):
             return
@@ -1065,6 +1238,9 @@ class SingleConsensusReviewViewer(BaseViewer):
         self._grid.select_cell("reviewed", self._selected_position)
         self._pair_chromatogram.select_column(self._selected_position, emit=False)
         self._update_detail()
+        issue_panel = getattr(self, "_issue_panel", None)
+        if issue_panel is not None:
+            issue_panel.sync_position(self._selected_position)
 
     @property
     def conflict_positions(self) -> tuple[int, ...]:
@@ -1333,6 +1509,10 @@ class SingleConsensusReviewViewer(BaseViewer):
         self._detail_label = QLabel()
         self._detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self._detail_label)
+        self._issue_panel = _SingleConsensusIssuePanel(self.select_position, self)
+        self._issue_panel.setObjectName("singleConsensusIssuePanel")
+        self._issue_panel.setVisible(False)
+        layout.addWidget(self._issue_panel)
         splitter = QSplitter(Qt.Orientation.Vertical)
         self._grid = SequenceGridWidget()
         self._grid.setObjectName("singleConsensusReviewSequenceGrid")
@@ -1390,6 +1570,10 @@ class SingleConsensusReviewViewer(BaseViewer):
         redo_button = QPushButton("Redo")
         redo_button.setIcon(studio_icon("redo"))
         redo_button.clicked.connect(self.redo)
+        self._issues_button = QPushButton()
+        self._issues_button.setObjectName("singleConsensusIssuesButton")
+        self._issues_button.setCheckable(True)
+        self._issues_button.toggled.connect(self._toggle_issue_panel)
         create_button = QPushButton("Create Reviewed Consensus")
         create_button.setIcon(studio_icon("create_dataset"))
         create_button.clicked.connect(self.create_and_register_reviewed_dataset)
@@ -1402,11 +1586,24 @@ class SingleConsensusReviewViewer(BaseViewer):
         edit_buttons.addWidget(accept_button)
         edit_buttons.addWidget(undo_button)
         edit_buttons.addWidget(redo_button)
+        edit_buttons.addWidget(self._issues_button)
         edit_buttons.addWidget(create_button)
         edit_buttons.addStretch(1)
         layout.addLayout(edit_buttons)
         self._populate_grid()
+        self._refresh_issue_panel()
         self.select_position(0)
+
+    def _toggle_issue_panel(self, visible: bool) -> None:
+        self._issue_panel.setVisible(visible)
+        if visible:
+            self._refresh_issue_panel()
+
+    def _refresh_issue_panel(self) -> None:
+        rows = self.issue_rows
+        self._issue_panel.set_rows(rows)
+        self._issues_button.setText(f"Issues ({len(rows)})")
+        self._issue_panel.sync_position(self._selected_position)
 
     def _populate_grid(self) -> None:
         self._grid.set_rows(
@@ -1453,6 +1650,9 @@ class SingleConsensusReviewViewer(BaseViewer):
         for position, previous, current in changes:
             self._reviewed_bases[position] = current if use_new else previous
             self._refresh_grid_cell(position)
+        issue_panel = getattr(self, "_issue_panel", None)
+        if issue_panel is not None:
+            self._refresh_issue_panel()
 
     def _edited_cells(self) -> set[tuple[str, int]]:
         return {
@@ -2648,6 +2848,16 @@ def _format_quality(value: object | None) -> str:
         return f"{float(value):.1f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def _format_evidence_side(base: object | None, quality: object | None) -> str:
+    """Format existing evidence only; missing/gapped sides remain explicit."""
+
+    if base is None:
+        return "—"
+    if quality is None:
+        return str(base).upper()
+    return f"{str(base).upper()} (Q{_format_quality(quality)})"
 
 
 def _side_sequence(view_model: SingleConsensusViewModel, attribute: str) -> str:
