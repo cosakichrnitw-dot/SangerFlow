@@ -7,6 +7,7 @@ delegated to existing SangerFlow core modules.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -100,7 +101,10 @@ class _SingleConsensusIssuePanel(QWidget):
     def __init__(self, select_position, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._select_position = select_position
-        self._rows: tuple[_ConsensusIssueRow, ...] = ()
+        self._rows_by_position: dict[int, _ConsensusIssueRow] = {}
+        self._positions: list[int] = []
+        self._visible_row_indexes: dict[int, int] = {}
+        self._selected_table_position: int | None = None
         self._syncing_selection = False
 
         layout = QVBoxLayout(self)
@@ -143,54 +147,143 @@ class _SingleConsensusIssuePanel(QWidget):
     def rows(self) -> tuple[_ConsensusIssueRow, ...]:
         """All unfiltered rows, retained only as current presentation state."""
 
-        return self._rows
+        return tuple(self._rows_by_position[position] for position in self._positions)
+
+    @property
+    def issue_count(self) -> int:
+        return len(self._positions)
 
     def set_rows(self, rows: tuple[_ConsensusIssueRow, ...]) -> None:
-        self._rows = rows
-        self._rebuild_table()
+        """Replace the presentation cache, populating only an open panel.
+
+        A hidden issue panel must not allocate a full QTableWidget model merely
+        because a reviewed base changed.  The immutable evidence is retained
+        in the presentation cache and is materialized when the user opens the
+        panel.
+        """
+
+        self._rows_by_position = {row.position: row for row in rows}
+        self._positions = sorted(self._rows_by_position)
+        if not self.isHidden():
+            self._rebuild_table()
+
+    def update_position(self, row: _ConsensusIssueRow | None, position: int) -> None:
+        """Apply one reviewed-base presentation change without a table rebuild."""
+
+        previous = self._rows_by_position.get(position)
+        if row is None:
+            self._rows_by_position.pop(position, None)
+            if previous is not None:
+                self._positions.pop(bisect_left(self._positions, position))
+        else:
+            self._rows_by_position[position] = row
+            if previous is None:
+                self._positions.insert(bisect_left(self._positions, position), position)
+
+        # While hidden, retain only lightweight data. Opening the panel will
+        # populate it once from the current cache.
+        if self.isHidden():
+            return
+
+        previous_visible = previous is not None and self._row_is_visible(previous)
+        current_visible = row is not None and self._row_is_visible(row)
+        previous_index = self._visible_row_indexes.get(position)
+
+        self._syncing_selection = True
+        try:
+            if previous_visible and current_visible and previous_index is not None:
+                self._set_table_row(previous_index, row)
+            elif previous_visible and previous_index is not None:
+                self._table.removeRow(previous_index)
+                if self._selected_table_position == position:
+                    self._selected_table_position = None
+                self._reindex_visible_rows()
+            elif current_visible:
+                row_index = self._insertion_index(position)
+                self._table.insertRow(row_index)
+                self._set_table_row(row_index, row)
+                self._reindex_visible_rows()
+        finally:
+            self._syncing_selection = False
+        self._empty_label.setVisible(self._table.rowCount() == 0)
+        self._table.setVisible(self._table.rowCount() > 0)
 
     def sync_position(self, position: int) -> None:
         """Highlight a visible table row without initiating another selection."""
 
-        for row_index in range(self._table.rowCount()):
-            item = self._table.item(row_index, 0)
-            if item is not None and item.data(Qt.ItemDataRole.UserRole) == position:
-                self._syncing_selection = True
-                try:
-                    self._table.selectRow(row_index)
-                finally:
-                    self._syncing_selection = False
-                return
+        row_index = self._visible_row_indexes.get(position)
+        if row_index is None or self._selected_table_position == position:
+            return
+        self._syncing_selection = True
+        try:
+            self._table.selectRow(row_index)
+            self._selected_table_position = position
+        finally:
+            self._syncing_selection = False
 
     def _visible_rows(self) -> tuple[_ConsensusIssueRow, ...]:
-        enabled = {
-            label
-            for label, checkbox in self._filters.items()
-            if checkbox.isChecked()
-        }
-        return tuple(row for row in self._rows if any(tag in enabled for tag in row.issues))
+        return tuple(
+            row
+            for position in self._positions
+            if self._row_is_visible(row := self._rows_by_position[position])
+        )
+
+    def _row_is_visible(self, row: _ConsensusIssueRow) -> bool:
+        return any(
+            self._filters[tag].isChecked()
+            for tag in row.issues
+            if tag in self._filters
+        )
+
+    @staticmethod
+    def _row_values(row: _ConsensusIssueRow) -> tuple[str, ...]:
+        return (
+            str(row.position + 1),
+            "; ".join(row.issues),
+            row.forward,
+            row.reverse,
+            row.automatic,
+            row.reviewed,
+            row.decision,
+            row.source,
+        )
+
+    def _set_table_row(self, row_index: int, row: _ConsensusIssueRow) -> None:
+        for column_index, value in enumerate(self._row_values(row)):
+            item = self._table.item(row_index, column_index)
+            if item is None:
+                item = QTableWidgetItem()
+                self._table.setItem(row_index, column_index, item)
+            item.setText(value)
+            item.setData(Qt.ItemDataRole.UserRole, row.position)
+
+    def _reindex_visible_rows(self) -> None:
+        self._visible_row_indexes = {}
+        for row_index in range(self._table.rowCount()):
+            item = self._table.item(row_index, 0)
+            if item is not None:
+                position = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(position, int):
+                    self._visible_row_indexes[position] = row_index
+
+    def _insertion_index(self, position: int) -> int:
+        for row_index in range(self._table.rowCount()):
+            item = self._table.item(row_index, 0)
+            existing = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            if isinstance(existing, int) and position < existing:
+                return row_index
+        return self._table.rowCount()
 
     def _rebuild_table(self, *_args) -> None:
         visible_rows = self._visible_rows()
         self._syncing_selection = True
         try:
+            self._selected_table_position = None
             self._table.clearContents()
             self._table.setRowCount(len(visible_rows))
             for row_index, row in enumerate(visible_rows):
-                values = (
-                    str(row.position + 1),
-                    "; ".join(row.issues),
-                    row.forward,
-                    row.reverse,
-                    row.automatic,
-                    row.reviewed,
-                    row.decision,
-                    row.source,
-                )
-                for column_index, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    item.setData(Qt.ItemDataRole.UserRole, row.position)
-                    self._table.setItem(row_index, column_index, item)
+                self._set_table_row(row_index, row)
+            self._reindex_visible_rows()
         finally:
             self._syncing_selection = False
         self._empty_label.setVisible(not visible_rows)
@@ -1326,45 +1419,50 @@ class SingleConsensusReviewViewer(BaseViewer):
     def issue_rows(self) -> tuple[_ConsensusIssueRow, ...]:
         """Derive the current read-only issue-table rows from existing state."""
 
-        rows = []
+        return tuple(
+            row
+            for position in range(len(self._view_model.columns))
+            if (row := self._issue_row_at(position)) is not None
+        )
+
+    def _issue_row_at(self, position: int) -> _ConsensusIssueRow | None:
+        """Present one immutable-evidence issue row plus its reviewed state."""
+
+        column = self._view_model.columns[position]
+        evidence = column.review_evidence
         one_sided_reasons = {
             ConsensusV21DecisionReason.ONE_SIDED_FORWARD.value,
             ConsensusV21DecisionReason.ONE_SIDED_REVERSE.value,
         }
-        for position, column in enumerate(self._view_model.columns):
-            evidence = column.review_evidence
-            reason = str(getattr(evidence, "decision_reason", ""))
-            issues = []
-            if _is_conflict_column(column):
-                issues.append("Conflict")
-            if _is_low_quality_column(column):
-                issues.append("Low Quality")
-            if reason in one_sided_reasons:
-                issues.append("One-sided")
-            reviewed = self._reviewed_bases[position]
-            if reviewed != evidence.consensus_base:
-                issues.append("Manual edit")
-            if not issues:
-                continue
-            rows.append(
-                _ConsensusIssueRow(
-                    position=position,
-                    issues=tuple(issues),
-                    forward=_format_evidence_side(
-                        evidence.forward_base,
-                        evidence.forward_quality,
-                    ),
-                    reverse=_format_evidence_side(
-                        evidence.reverse_base,
-                        evidence.reverse_quality,
-                    ),
-                    automatic=evidence.consensus_base,
-                    reviewed=reviewed,
-                    decision=decision_reason_label(reason),
-                    source=decision_source_label(column.selected_source),
-                )
-            )
-        return tuple(rows)
+        reason = str(getattr(evidence, "decision_reason", ""))
+        issues = []
+        if _is_conflict_column(column):
+            issues.append("Conflict")
+        if _is_low_quality_column(column):
+            issues.append("Low Quality")
+        if reason in one_sided_reasons:
+            issues.append("One-sided")
+        reviewed = self._reviewed_bases[position]
+        if reviewed != evidence.consensus_base:
+            issues.append("Manual edit")
+        if not issues:
+            return None
+        return _ConsensusIssueRow(
+            position=position,
+            issues=tuple(issues),
+            forward=_format_evidence_side(
+                evidence.forward_base,
+                evidence.forward_quality,
+            ),
+            reverse=_format_evidence_side(
+                evidence.reverse_base,
+                evidence.reverse_quality,
+            ),
+            automatic=evidence.consensus_base,
+            reviewed=reviewed,
+            decision=decision_reason_label(reason),
+            source=decision_source_label(column.selected_source),
+        )
 
     def select_position(self, position: int) -> None:
         if not 0 <= int(position) < len(self._view_model.columns):
@@ -1740,6 +1838,13 @@ class SingleConsensusReviewViewer(BaseViewer):
         self._issues_button.setText(f"Issues ({len(rows)})")
         self._issue_panel.sync_position(self._selected_position)
 
+    def _refresh_issue_positions(self, positions: object) -> None:
+        """Update only changed reviewed positions in the issue presentation cache."""
+
+        for position in positions:
+            self._issue_panel.update_position(self._issue_row_at(position), position)
+        self._issues_button.setText(f"Issues ({self._issue_panel.issue_count})")
+
     def _populate_grid(self) -> None:
         self._grid.set_rows(
             (
@@ -1782,12 +1887,13 @@ class SingleConsensusReviewViewer(BaseViewer):
         *,
         use_new: bool = True,
     ) -> None:
+        changes = tuple(changes)
         for position, previous, current in changes:
             self._reviewed_bases[position] = current if use_new else previous
             self._refresh_grid_cell(position)
         issue_panel = getattr(self, "_issue_panel", None)
         if issue_panel is not None:
-            self._refresh_issue_panel()
+            self._refresh_issue_positions(position for position, _previous, _current in changes)
 
     def _edited_cells(self) -> set[tuple[str, int]]:
         return {

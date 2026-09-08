@@ -608,6 +608,127 @@ class FRConsensusWorkflowTests(unittest.TestCase):
         # Table presentation does not mutate production consensus output.
         self.assertEqual(original_output.original_sequence, single.original_consensus)
 
+    def test_closed_issue_panel_defers_table_population_until_opened(self) -> None:
+        single = SingleConsensusReviewViewer(
+            build_consensus_sample_rows(
+                (_read("Clean_F.ab1", "ATGC"), _read("Clean_R.ab1", "GCAT"))
+            )[0]
+        )
+        table = single.findChild(QTableWidget, "singleConsensusIssueTable")
+        self.assertIsNotNone(table)
+        self.assertEqual(table.rowCount(), 0)
+
+        self.assertTrue(single.set_base(1, "A"))
+
+        # A closed panel retains lightweight rows but never allocates table
+        # items in the edit/Undo/Redo hot path.
+        self.assertEqual(table.rowCount(), 0)
+        self.assertEqual(tuple(row.position for row in single.issue_rows), (1,))
+        self.assertEqual(single._issues_button.text(), "Issues (1)")
+
+        single._issues_button.setChecked(True)
+        self.assertEqual(table.rowCount(), 1)
+        self.assertEqual(table.item(0, 0).text(), "2")
+        self.assertEqual(table.item(0, 1).text(), "Manual edit")
+        self.assertEqual(table.item(0, 5).text(), "A")
+
+    def test_open_issue_panel_updates_only_affected_row_for_edit_undo_redo(self) -> None:
+        single = SingleConsensusReviewViewer(
+            build_consensus_sample_rows(
+                (_read("IK345_F.ab1", "ACGTAC"), _read("IK345_R.ab1", "GAACAT"))
+            )[0]
+        )
+        single._issues_button.setChecked(True)
+        table = single.findChild(QTableWidget, "singleConsensusIssueTable")
+        self.assertIsNotNone(table)
+        self.assertEqual(table.rowCount(), 2)
+
+        unaffected = table.item(1, 1)
+        self.assertIsNotNone(unaffected)
+        marker_role = Qt.ItemDataRole.UserRole + 1
+        unaffected.setData(marker_role, "unchanged issue row")
+
+        self.assertTrue(single.set_base(1, "A"))
+        self.assertEqual(table.rowCount(), 2)
+        self.assertEqual(table.item(0, 1).text(), "Conflict; Manual edit")
+        self.assertEqual(table.item(1, 1).data(marker_role), "unchanged issue row")
+
+        self.assertTrue(single.undo())
+        self.assertEqual(table.item(0, 1).text(), "Conflict")
+        self.assertEqual(table.item(1, 1).data(marker_role), "unchanged issue row")
+
+        self.assertTrue(single.redo())
+        self.assertEqual(table.item(0, 1).text(), "Conflict; Manual edit")
+        self.assertEqual(table.item(1, 1).data(marker_role), "unchanged issue row")
+
+    def test_issue_table_reindexes_dynamic_manual_edits_between_immutable_rows(self) -> None:
+        single = SingleConsensusReviewViewer(
+            build_consensus_sample_rows(
+                (_read("IK345_F.ab1", "ACGTAC"), _read("IK345_R.ab1", "GAACAT"))
+            )[0]
+        )
+        single._issues_button.setChecked(True)
+        table = single.findChild(QTableWidget, "singleConsensusIssueTable")
+        self.assertIsNotNone(table)
+
+        def changed_base(position: int) -> str:
+            return {"A": "C", "C": "G", "G": "T", "T": "A", "N": "A"}[single.original_consensus[position]]
+
+        def assert_positions(expected: tuple[int, ...]) -> None:
+            self.assertEqual(tuple(single._issue_panel._visible_row_indexes), expected)
+            self.assertEqual(
+                tuple(table.item(index, 0).data(Qt.ItemDataRole.UserRole) for index in range(table.rowCount())),
+                expected,
+            )
+            for position in expected:
+                single.select_position(position)
+                self.application.processEvents()
+                selected = table.selectedItems()
+                self.assertTrue(selected)
+                self.assertEqual(selected[0].data(Qt.ItemDataRole.UserRole), position)
+
+        # Immutable Conflict rows are at positions 1 and 4.  Exercise the
+        # requested insert/remove history on both sides and between them.
+        self.assertTrue(single.set_base(0, changed_base(0)))  # edit A
+        assert_positions((0, 1, 4))
+        self.assertTrue(single.set_base(2, changed_base(2)))  # edit B
+        assert_positions((0, 1, 2, 4))
+        self.assertTrue(single.undo())  # Undo B
+        assert_positions((0, 1, 4))
+        self.assertTrue(single.set_base(3, changed_base(3)))  # edit C
+        assert_positions((0, 1, 3, 4))
+        self.assertTrue(single.undo())  # Undo C
+        assert_positions((0, 1, 4))
+        self.assertTrue(single.undo())  # Undo A
+        assert_positions((1, 4))
+        self.assertTrue(single.redo())  # Redo A
+        assert_positions((0, 1, 4))
+
+        self.assertEqual(table.item(1, 1).text(), "Conflict")
+        self.assertEqual(table.item(2, 1).text(), "Conflict")
+
+    def test_open_issue_panel_keeps_low_quality_classification_while_manual_state_changes(self) -> None:
+        single = SingleConsensusReviewViewer(
+            build_consensus_sample_rows(
+                (
+                    _read("Low_F.ab1", "ACGTACGT", quality=[2, 2, 30, 30, 30, 30, 2, 2]),
+                    _read("Low_R.ab1", "GTAC", quality=[30, 30, 30, 30]),
+                )
+            )[0]
+        )
+        single._issues_button.setChecked(True)
+        table = single.findChild(QTableWidget, "singleConsensusIssueTable")
+        self.assertIsNotNone(table)
+        self.assertTrue(single.set_base(0, "A"))
+        self.assertIn("Low Quality", table.item(0, 1).text())
+        self.assertIn("Manual edit", table.item(0, 1).text())
+
+        self.assertTrue(single.undo())
+        self.assertEqual(table.item(0, 1).text(), "Low Quality")
+        self.assertTrue(single.redo())
+        self.assertIn("Low Quality", table.item(0, 1).text())
+        self.assertIn("Manual edit", table.item(0, 1).text())
+
     def test_issue_table_empty_state_and_filters_are_display_only(self) -> None:
         reads = (_read("IK345_F.ab1", "ATGC"), _read("IK345_R.ab1", "GCAT"))
         single = SingleConsensusReviewViewer(build_consensus_sample_rows(reads)[0])
